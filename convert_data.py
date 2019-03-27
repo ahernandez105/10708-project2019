@@ -190,7 +190,7 @@ def convert_support2(infile, outfile, targetfile, target_name):
                 feats = {}
                 for i, lower in enumerate(bins[:-1]):
                     upper = bins[i+1]
-                    feats[(lower, upper)] = f"{lower}<{k}<{upper}" 
+                    feats[(lower, upper)] = f"{lower:.2f}<{k}<{upper:.2f}" 
                 
                 for old, new in zip(all_data, binned_data):
                     if old[k] is not None:
@@ -210,7 +210,9 @@ def convert_support2(infile, outfile, targetfile, target_name):
 
         elif k == 'd.time':
             # split into 156 week intervals
-            bins = np.arange(0, 7*156+1, 7)
+            # bins = np.arange(0, 7*156+1, 7)
+            # split into 13 84-day intervals
+            bins = np.arange(0, 7*156+1, 84)
             feats = {}
             for i, lower in enumerate(bins[:-1]):
                 upper = bins[i+1]
@@ -270,20 +272,27 @@ def convert_support2(infile, outfile, targetfile, target_name):
             split_data = binned_data[8105:]
             split_target = target[8105:]
 
-        ofile = outfile + '_' + split + '.tab'
-        tfile = targetfile + '_' + split + '.Y'
+        ofile = os.path.join('data', outfile, outfile + '_' + split + '.tab')
+        tfile = os.path.join('data', targetfile, targetfile + '_' + split + '.Y')
 
         g = open(ofile, 'w')
-        writer = csv.DictWriter(g, split_data[0].keys(), dialect=dial)
-        writer.writerows(split_data)
+        # writer = csv.DictWriter(g, split_data[0].keys(), dialect=dial)
+        # writer.writerows(split_data)
+
+        # don't write 'missing' values
+        for row in split_data:
+            values = [str(x) for x in row.values() if x != 'missing']
+            g.write(' '.join(values))
+            g.write('\n')
         g.close()
 
         # write target
         g = open(tfile, 'w')
-        bins = np.arange(0, 7*156+1, 7)
 
         if target_name == 'd.time':
             feats = []
+            # bins = np.arange(0, 7*156+1, 7)
+            bins = np.arange(0, 7*156+1, 84)
             for i, lower in enumerate(bins[:-1]):
                 upper = bins[i+1]
                 feats.append(f"{lower}<d.time<{upper}")
@@ -312,4 +321,4 @@ def convert_support2(infile, outfile, targetfile, target_name):
 
 
 if __name__ == '__main__':
-    convert_support2(sys.argv[1], sys.argv[2], sys.argv[3])
+    convert_support2(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
