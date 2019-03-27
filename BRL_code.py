@@ -100,40 +100,77 @@ import os,time,json,traceback,sys
 from scipy.special import gammaln
 from scipy.stats import poisson,beta
 # import cPickle as Pickle
+from sklearn.metrics import accuracy_score
 import pickle as Pickle
 from collections import defaultdict,Counter
 from fim import fpgrowth #this is PyFIM, available from http://www.borgelt.net/pyfim.html
 from matplotlib import pyplot as plt #Uncomment to use the plot_chains function
 
+seterr(all='raise')
+
+params = {
+    'titanic': {
+        'lambda': 3.,
+        'eta': 1.,
+        'alpha': array([1., 1.]),
+        'numiters': 50000,
+        'thinning': 1,
+        'maxlhs': 2,
+        'minsupport': 10,
+        'nchains': 3,
+    },
+    'sup2': {
+        'lambda': 5.,
+        'eta': 2.,
+        'alpha': ones(157,),
+        'numiters': 1000000,
+        'thinning': 1,
+        'maxlhs': 2,
+        'minsupport': 30,
+        'nchains': 10,
+    },
+    'sup2_bin': {
+        'lambda': 7.,
+        'eta': 2.,
+        'alpha': ones(2,),
+        'numiters': 200000,
+        'thinning': 2,
+        'maxlhs': 2,
+        'minsupport': 10,
+        'nchains': 3,
+    },
+    'sup2_3m': {
+        'lambda': 7.,
+        'eta': 2.,
+        'alpha': ones(14,),
+        'numiters': 300000,
+        'thinning': 1,
+        'maxlhs': 2,
+        'minsupport': 30,
+        'nchains': 3,
+    },
+}
+
+# TODO: extend to multiclass!!
 
 def topscript():
-    fname = 'titanic'
-    # fname = 'sup2'
+    fname = sys.argv[1]
     
     #Prior hyperparameters
-    # lbda = 3. #prior hyperparameter for expected list length (excluding null rule)
-    lbda = 3. #prior hyperparameter for expected list length (excluding null rule)
-    eta = 1. #prior hyperparameter for expected list average width (excluding null rule)
-    # alpha = array([1.,1.])
+    lbda = params[fname]['lambda'] #prior hyperparameter for expected list length (excluding null rule)
+    eta = params[fname]['eta'] #prior hyperparameter for expected list average width (excluding null rule)
+    alpha = params[fname]['alpha'] #prior hyperparameter for multinomial pseudocounts
 
-    #prior hyperparameter for multinomial pseudocounts
-    if fname == 'titanic':
-        alpha = array([1., 1.])
-    elif fname == 'sup2':
-        alpha = array([1. for _ in range(156)])
-    
     #rule mining parameters
-    maxlhs = 2 #maximum cardinality of an itemset
-    minsupport = 10 #minimum support (%) of an itemset
+    maxlhs = params[fname]['maxlhs'] #maximum cardinality of an itemset
+    minsupport = params[fname]['minsupport'] #minimum support (%) of an itemset
     
     #mcmc parameters
-    # numiters = 50000 # Uncomment plot_chains in run_bdl_multichain to visually check mixing and convergence
-    # thinning = 1 #The thinning rate
-    numiters = 100000
-    thinning = 2
+    numiters = params[fname]['numiters'] # Uncomment plot_chains in run_bdl_multichain to visually check mixing and convergence
+    thinning = params[fname]['thinning'] #The thinning rate
 
     burnin = numiters//2 #the number of samples to drop as burn-in in-simulation
-    nchains = 5 #number of MCMC chains. These are simulated in serial, and then merged after checking for convergence.
+    nchains = 3 #number of MCMC chains. These are simulated in serial, and then merged after checking for convergence.
     
     #End parameters
     
@@ -163,12 +200,18 @@ def topscript():
         
         #Evaluate on the test data
         preds_d_star = preds_d_t(Xtest,Ytest,d_star,theta) #Use d_star to make predictions on the test data
-        accur_d_star = preds_to_acc(preds_d_star,Ylabels_test)#Accuracy of the point estimate
+        if Ytest.shape[-1] == 2:
+            accur_d_star = preds_to_acc(preds_d_star,Ylabels_test)#Accuracy of the point estimate
+        else:
+            accur_d_star = preds_to_acc_multi(preds_d_star, Ylabels_test)
         print('accuracy of point estimate',accur_d_star)
     
     ###The full posterior, BRL-post
     preds_fullpost = preds_full_posterior(Xtest,Ytest,Xtrain,Ytrain,permsdic,alpha)
-    accur_fullpost = preds_to_acc(preds_fullpost,Ylabels_test) #Accuracy of the full posterior
+    if Ytest.shape[-1] == 2:
+        accur_fullpost = preds_to_acc(preds_fullpost,Ylabels_test) #Accuracy of the full posterior
+    else:
+        accur_fullpost = preds_to_acc_multi(preds_fullpost, Ylabels_test)
     print('accuracy of full posterior',accur_fullpost)
     
     return permsdic, d_star, itemsets, theta, ci_theta, preds_d_star, accur_d_star, preds_fullpost, accur_fullpost
@@ -208,7 +251,7 @@ def run_bdl_multichain_serial(numiters,thinning,alpha,lbda,eta,X,Y,nruleslen,lhs
     
     print('Rhat for convergence:',Rhat)
     ##plot?
-    plot_chains(res)
+    # plot_chains(res)
     return res,Rhat
 
 
@@ -251,7 +294,7 @@ def gelmanrubin(res):
     #And finally,
     try:
         Rhat = sqrt(varhat/float(W))
-    except (RuntimeWarning, ZeroDivisionError):
+    except (RuntimeWarning, ZeroDivisionError, FloatingPointError):
         print('RuntimeWarning computing Rhat, W='+str(W)+', B='+str(B))
         Rhat = 0.
     return Rhat
@@ -326,53 +369,109 @@ def get_rule_rhs(Xtrain,Ytrain,d_t,alpha,intervals):
     theta = []
     ci_theta = []
     for i,j in enumerate(d_t):
-        #theta ~ Dirichlet(N[j,:] + alpha)
-        #E[theta] = (N[j,:] + alpha)/float(sum(N[j,:] + alpha))
-        #NOTE this result is only for binary classification
-        #theta = p(y=1)
-        theta.append((N_t[i,1] + alpha[1])/float(sum(N_t[i,:] + alpha)))
-        #And now the 95% interval, for Beta(N[j,1] + alpha[1], N[j,0] + alpha[0])
-        if intervals:
-            ci_theta.append(beta.interval(0.95,N_t[i,1] + alpha[1],N_t[i,0] + alpha[0]))
+        # i is the index in the list,
+        # j is the global index of the rule
+
+        if Ytrain.shape[-1] == 2:
+            #theta ~ Dirichlet(N[j,:] + alpha)
+            #E[theta] = (N[j,:] + alpha)/float(sum(N[j,:] + alpha))
+            #NOTE this result is only for binary classification
+            #theta = p(y=1)
+            theta.append((N_t[i,1] + alpha[1])/float(sum(N_t[i,:] + alpha)))
+            #And now the 95% interval, for Beta(N[j,1] + alpha[1], N[j,0] + alpha[0])
+            if intervals:
+                ci_theta.append(beta.interval(0.95,N_t[i,1] + alpha[1],N_t[i,0] + alpha[0]))
+
+        else:
+            # theta ~ Dirichlet(N[j,:] + alpha)
+            # E[theta] = (N[j,:] + alpha) / float(sum(N[j,:] + alpha))
+            theta.append((N_t[i, :] + alpha) / (N_t[i, :] + alpha).sum())
+
+            # marginal of a dirichlet is beta.
+            # X_i ~ Beta(alpha[i], alpha.sum() - alpha[i])
+            if intervals:
+                alpha_i = N_t[i, :] + alpha
+                ci_theta.append(beta.interval(0.95, alpha_i, (N_t[i, :] + alpha).sum() - alpha_i))
     return theta,ci_theta
 
 #Get predictions from the list d_t
 def preds_d_t(X,Y,d_t,theta):
-    #this is binary only. The score is the Prob of 1.
-    unused = set(range(Y.shape[0]))
-    preds = -1*ones(Y.shape[0])
-    for i,j in enumerate(d_t):
-        usedj = unused.intersection(X[j]) #these are the observations in X that make it to rule j
-        preds[list(usedj)] = theta[i]
-        unused = unused.difference(set(usedj))
+    if Y.shape[-1] == 2:
+        #this is binary only. The score is the Prob of 1.
+        unused = set(range(Y.shape[0]))
+        preds = -1*ones(Y.shape[0])
+        for i,j in enumerate(d_t):
+            usedj = unused.intersection(X[j]) #these are the observations in X that make it to rule j
+            preds[list(usedj)] = theta[i]
+            unused = unused.difference(set(usedj))
+
+    else:
+        # initialize
+        unused = set(range(Y.shape[0]))
+        preds = full_like(Y, -1.)
+
+        for i, j in enumerate(d_t):
+            usedj = unused.intersection(X[j])
+            preds[list(usedj)] = theta[i]
+            unused = unused.difference(set(usedj))
+
+        # raise NotImplementedError
+
     if preds.min() < 0:
         raise Exception #this means some observation wasn't given a prediction - shouldn't happen
     return preds
 
 #Make predictions using the full posterior
 def preds_full_posterior(X,Y,Xtrain,Ytrain,permsdic,alpha):
-    #this is binary only. The score is the Prob of 1.
-    preds = zeros(Y.shape[0])
-    postcount = 0. #total number of posterior samples
-    # for perm,vals in permsdic.iteritems():
-    for perm,vals in permsdic.items():
-        #We will compute probabilities for this antecedent list d.
-        d_t = Pickle.loads(perm)
-        permcount = float(vals[1]) #number of copies of this perm in the posterior
-        postcount += float(vals[1])
-        #We will get the posterior E[theta]'s for this list
-        theta,jnk = get_rule_rhs(Xtrain,Ytrain,d_t,alpha,False)
-        #And assign observations a score
-        unused = set(range(Y.shape[0]))
-        for i,j in enumerate(d_t):
-            usedj = unused.intersection(X[j]) #these are the observations in X that make it to rule j
-            preds[list(usedj)] += theta[i]*permcount
-            unused = unused.difference(set(usedj))
-        if unused:
-            raise Exception #all observations should have been given predictions
-        #Done with this list, move on to the next one.
-    #Done with all lists. Normalize.
-    preds /= float(postcount)
+    if Y.shape[-1] == 2:
+        #this is binary only. The score is the Prob of 1.
+        preds = zeros(Y.shape[0])
+        postcount = 0. #total number of posterior samples
+        # for perm,vals in permsdic.iteritems():
+        for perm,vals in permsdic.items():
+            #We will compute probabilities for this antecedent list d.
+            d_t = Pickle.loads(perm)
+            permcount = float(vals[1]) #number of copies of this perm in the posterior
+            postcount += float(vals[1])
+            #We will get the posterior E[theta]'s for this list
+            theta,jnk = get_rule_rhs(Xtrain,Ytrain,d_t,alpha,False)
+            #And assign observations a score
+            unused = set(range(Y.shape[0]))
+            for i,j in enumerate(d_t):
+                usedj = unused.intersection(X[j]) #these are the observations in X that make it to rule j
+                preds[list(usedj)] += theta[i]*permcount
+                unused = unused.difference(set(usedj))
+            if unused:
+                raise Exception #all observations should have been given predictions
+            #Done with this list, move on to the next one.
+        #Done with all lists. Normalize.
+        preds /= float(postcount)
+
+    else:
+        preds = zeros_like(Y)
+        postcount = 0.
+
+        for perm, vals in permsdic.items():
+            #We will compute probabilities for this antecedent list d.
+            d_t = Pickle.loads(perm)
+            permcount = float(vals[1]) #number of copies of this perm in the posterior
+            postcount += float(vals[1])
+
+            #We will get the posterior E[theta]'s for this list
+            theta, _ = get_rule_rhs(Xtrain, Ytrain, d_t, alpha, False)
+
+            #And assign observations a score
+            unused = set(range(Y.shape[0]))
+            for i, j in enumerate(d_t):
+                usedj = unused.intersection(X[j]) #these are the observations in X that make it to rule j
+                preds[list(usedj)] += theta[i]*permcount
+                unused = unused.difference(set(usedj))
+            if unused:
+                raise Exception #all observations should have been given predictions
+            #Done with this list, move on to the next one.
+        #Done with all lists. Normalize.
+        preds /= float(postcount)
+
     return preds
 
 #Compute accuracy
@@ -386,6 +485,13 @@ def preds_to_acc(y_score,y_true):
             accur+=1
     accur = accur/float(len(y_score))
     return accur
+
+# compute multiclass accuracy
+def preds_to_acc_multi(y_scores, y_true):
+    # take the maximum prob as the chosen class.
+    y_pred = argmax(y_scores, axis=1)
+
+    return accuracy_score(y_true, y_pred)
 
 ##############MCMC core
 
@@ -420,8 +526,9 @@ def bayesdl_mcmc(numiters,thinning,alpha,lbda,eta,X,Y,nruleslen,lhs_len,maxlhs,p
             N_star = compute_rule_usage(d_star,R_star,X,Y)
             permsdic[a_star][0] = fn_logposterior(d_star,R_star,N_star,alpha,logalpha_pmf,logbeta_pmf,maxlhs,beta_Z,nruleslen,lhs_len)
         #Compute the metropolis acceptance probability
-        q = exp(permsdic[a_star][0] - permsdic[a_t][0] + Jratio)
-        u = random.random()
+        # stay in log-likelihood to avoid underflow
+        q = permsdic[a_star][0] - permsdic[a_t][0] + Jratio
+        u = log(random.random())
         if u < q:
             #then we accept the move
             d_t = list(d_star)
@@ -617,6 +724,10 @@ def compute_rule_usage(d_star,R_star,X,Y):
         i+=1
     if int(sum(N_star)) != Y.shape[0]:
         raise Exception #bug check
+
+    # print(N_star)
+    # print(N_star.shape)
+    # sys.exit()
     return N_star
 
 
@@ -630,15 +741,35 @@ def get_freqitemsets(fname,minsupport,maxlhs):
     data,Y = load_data(fname)
     #Now find frequent itemsets
     #Mine separately for each class
-    data_pos = [x for i,x in enumerate(data) if Y[i,0]==0]
-    data_neg = [x for i,x in enumerate(data) if Y[i,0]==1]
-    assert len(data_pos)+len(data_neg) == len(data)
-    try:
-        itemsets = [r[0] for r in fpgrowth(data_pos,supp=minsupport,zmax=maxlhs)]
-        itemsets.extend([r[0] for r in fpgrowth(data_neg,supp=minsupport,zmax=maxlhs)])
-    except TypeError:
-        itemsets = [r[0] for r in fpgrowth(data_pos,supp=minsupport,max=maxlhs)]
-        itemsets.extend([r[0] for r in fpgrowth(data_neg,supp=minsupport,max=maxlhs)])
+    if Y.shape[-1] == 2:
+        # currently only mine itemsets for binary classification
+        data_pos = [x for i,x in enumerate(data) if Y[i,0]==0]
+        data_neg = [x for i,x in enumerate(data) if Y[i,0]==1]
+        assert len(data_pos)+len(data_neg) == len(data)
+
+        try:
+            itemsets = [r[0] for r in fpgrowth(data_pos,supp=minsupport,zmax=maxlhs)]
+            itemsets.extend([r[0] for r in fpgrowth(data_neg,supp=minsupport,zmax=maxlhs)])
+        except TypeError:
+            print("TypeError in fpgrowth")
+            itemsets = [r[0] for r in fpgrowth(data_pos,supp=minsupport,max=maxlhs)]
+            itemsets.extend([r[0] for r in fpgrowth(data_neg,supp=minsupport,max=maxlhs)])
+
+    else:
+        data_classes = [[] for _ in range(Y.shape[-1])]
+        for row, y in zip(data, Y):
+            i = list(y).index(1)
+            data_classes[i].append(row)
+
+        assert sum([len(x) for x in data_classes]) == len(data)
+
+        itemsets = [
+            [r[0] for r in fpgrowth(data_class, supp=minsupport, zmax=maxlhs)]
+            for data_class in data_classes
+        ]
+        # flatten
+        itemsets = [x for class_itemset in itemsets for x in class_itemset]
+
     itemsets = list(set(itemsets))
     print(len(itemsets),'rules mined')
     #Now form the data-vs.-lhs set
@@ -675,13 +806,14 @@ def get_testdata(fname,itemsets):
 #Read in the .tab file
 def load_data(fname):
     #Load data
-    with open(fname+'.tab','r') as fin:
+    folder = fname.rsplit('_', maxsplit=1)[0]
+    with open(os.path.join('data', folder, fname+'.tab'),'r') as fin:
         A = fin.readlines()
     data = []
     for ln in A:
         data.append(ln.split())
     #Now load Y
-    Y = loadtxt(fname+'.Y')
+    Y = loadtxt(os.path.join('data', folder, fname+'.Y'))
     if len(Y.shape)==1:
         Y = array([Y])
     return data,Y
