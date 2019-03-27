@@ -10,6 +10,11 @@ or impute with suggested values?
 we can only work with categorical features, so split into intervals
 
 take d.time as time of death?????
+
+TODO:
+- add ca to ca features (for ca_yes, ca_no)
+- add feature name to missing? (e.g. adlp_missing)
+- or remove missing values?
 """
 
 import sys
@@ -59,7 +64,7 @@ continuous_vars = [
     'crea',
     'sod',
     'ph',
-    'adl',  # maybe not? activities of daily living
+    'adlp',  # maybe not? activities of daily living
     'adls', # adl surrogate
     'adlsc',
 ]
@@ -114,7 +119,7 @@ mapping = {
     'adlsc': float,
 }
 
-def convert_support2(infile, outfile, targetfile):
+def convert_support2(infile, outfile, targetfile, target_name):
     f = open(infile, 'r')
     reader = csv.DictReader(f)
     # pprint.pprint(reader.fieldnames)
@@ -124,7 +129,7 @@ def convert_support2(infile, outfile, targetfile):
     # consider up to 156 weeks
     d_max = 1092
 
-    # collect all values, analyze dist
+    # collect all values
     all_data = []
     for line in reader:
         # ignore index
@@ -137,7 +142,11 @@ def convert_support2(infile, outfile, targetfile):
                 pass
             else:
                 try:
-                    v = mapping[k](v.strip())
+                    if mapping[k] is bool:
+                        v = bool(int(v.strip()))
+                        v = f'{k}_{v}'
+                    else:
+                        v = mapping[k](v.strip())
                 except:
                     print(f"[{k}] [{v.strip()}]")
                     sys.exit()
@@ -194,6 +203,10 @@ def convert_support2(infile, outfile, targetfile):
                             print(feats)
                             print(old[k])
                             raise ValueError
+            else:
+                for old, new in zip(all_data, binned_data):
+                    if old[k] is not None:
+                        new[k] = f'{k}_{old[k]}'
 
         elif k == 'd.time':
             # split into 156 week intervals
@@ -227,13 +240,19 @@ def convert_support2(infile, outfile, targetfile):
 
     print(binned_data[0])
 
-    # remove d.time, since it is target
-    target = [row['d.time'] for row in binned_data]
-    for row in binned_data:
-        del row['d.time']
+    # target_name = 'd.time'
+    target = [row[target_name] for row in binned_data]
 
-    print(binned_data[0])
-    print(target[:5])
+    # remove keys about death?
+    # also remove target
+    to_remove = ['death', 'hospdead', 'd.time']
+    for row in binned_data:
+        for k in to_remove:
+            del row[k]
+
+    for r in binned_data[:5]:
+        print(r)
+    print(target[:10])
 
     # write attributes
     dial = csv.excel_tab
@@ -262,13 +281,19 @@ def convert_support2(infile, outfile, targetfile):
         # write target
         g = open(tfile, 'w')
         bins = np.arange(0, 7*156+1, 7)
-        feats = []
-        for i, lower in enumerate(bins[:-1]):
-            upper = bins[i+1]
-            feats.append(f"{lower}<d.time<{upper}")
-            # feats[f"{lower}<{k}<{upper}"] = i
-        feats.append('d.time>=1092')
-        # feats['d.time>=1092'] = len(feats)
+
+        if target_name == 'd.time':
+            feats = []
+            for i, lower in enumerate(bins[:-1]):
+                upper = bins[i+1]
+                feats.append(f"{lower}<d.time<{upper}")
+            feats.append('d.time>=1092')
+
+        elif target_name == 'death':
+            feats = ['death_True', 'death_False']
+        
+        else:
+            raise NotImplementedError
 
         for y in split_target:
             # one_hot = [str(int(y == feat)) for feat in feats]
