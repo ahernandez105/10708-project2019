@@ -8,8 +8,9 @@ from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Dirichlet
 import pandas as pd
 
-from utils import get_freq_itemsets
-from load_data import load_support2, Support2
+# from utils import get_freq_itemsets
+# from load_data import load_support2, Support2
+from load_data import load_data
 
 def make_support2_encoder(encoder_args):
     n_features = encoder_args['n_features']
@@ -112,12 +113,14 @@ def parse_arguments():
 def main():
     args = parse_arguments()
 
-    # load data
-    x, c, y = load_support2(args['raw_file'], args['categorical_file'],
-                    args['label_file'])
-    S, ante_lens, antes = get_freq_itemsets(x, y)
+    # # load data
+    # x, c, y = load_support2(args['raw_file'], args['categorical_file'],
+    #                 args['label_file'])
+    # S, ante_lens, antes = get_freq_itemsets(x, y)
 
-    dataset = Support2(x, c, y, S)
+    # dataset = Support2(x, c, y, S)
+
+    x, c, y, S, antes = load_data(args, 'support2')
 
     print(antes[:5])
 
@@ -129,13 +132,15 @@ def main():
     # use whole dataset for now
     S = torch.tensor(S, dtype=torch.float)
     c = torch.tensor(c, dtype=torch.float)
+    n_train = S.shape[0]
+    print(n_train)
 
     for ep in range(50):
         d = model(c, S)
 
         n_classes = y.shape[-1]
         print(n_classes)
-        B = torch.zeros((len(dataset), n_classes, len(d) + 1))
+        B = torch.zeros((n_train, n_classes, len(d) + 1))
         print(y.shape)
         for i, xi in enumerate(x):
             for j, lhs in enumerate(d):

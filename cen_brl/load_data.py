@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset
 
+from utils import get_freq_itemsets
+
 
 def load_support2(filename, cat_file, y_file):
     # data = pd.read_csv(filename, index_col=0)[:7105]
@@ -61,3 +63,14 @@ class Support2(Dataset):
             'x': self.x[idx],
             'y': self.y[idx]
         }
+
+def load_data(args, dataset):
+    if dataset == 'support2':
+        x, c, y = load_support2(args['raw_file'], args['categorical_file'],
+                        args['label_file'])
+        S, ante_lens, antes = get_freq_itemsets(x, y)
+
+        return x, c, y, S, antes
+
+    else:
+        raise NotImplementedError
