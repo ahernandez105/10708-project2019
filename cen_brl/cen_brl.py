@@ -1,9 +1,12 @@
 import argparse
 import sys
+import time
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Dirichlet
 import pandas as pd
@@ -26,64 +29,58 @@ def make_support2_encoder(encoder_args):
 class CEN_BRL(nn.Module):
     def __init__(self, encoder_args, encoding_dim, generator_hidden,
                 attention_hidden, A, max_len, n_train):
-        """
-        A - list of antecedents
-        """
-
         super(CEN_BRL, self).__init__()
+
+        self.A = A
+        self.n_antes = len(A)
 
         self.context_encoder = make_support2_encoder(encoder_args)
 
-        # for now, the decision list generator takes in 
-        # the encoded context (phi) at each timestep
         self.list_generator = nn.LSTM(
-            input_size=encoding_dim,
-            hidden_size=generator_hidden,
+            input_size=self.n_antes,
+            hidden_size=encoding_dim,
             num_layers=1
         )
 
-        # max length of decision list
         self.max_len = max_len
 
-        self.A = A
-
-        print("# train", n_train)
         self.attention = nn.Sequential(
-            nn.Linear(n_train + generator_hidden, attention_hidden),
+            nn.Linear(n_train + encoding_dim, attention_hidden),
             nn.ReLU(True),
             nn.Linear(attention_hidden, 1),
+            nn.LogSoftmax(dim=0)
         )
 
     def forward(self, context, S):
         """
         context - batch_size x n_features
         S - batch_size x n_antecedents
+
+        For differentiability, at each timestep, output a soft weighting over all
+        antecedents
         """
         n_train, n_antes = S.size()
-        
+
         phi = self.context_encoder(context)
         phi = phi.unsqueeze(0)
 
+        generator_state = phi, torch.zeros_like(phi)
+        x = torch.ones(1, n_train, self.n_antes)
+
         d = []
-
         for t in range(self.max_len):
-            if t == 0:
-                e, generator_state = self.list_generator(phi)
-            else:
-                e, generator_state = self.list_generator(phi, generator_state)
+            e, generator_state = self.list_generator(x, generator_state)
 
-            # compute e_t by averaging...
-            # e_t - 1 x n_hidden
             e_t = e.mean(1)
-
-            # want scores for each ante,
-            # so input is n_ante x (n_train + gen_features)
             attention_input = torch.cat([S.transpose(0, 1), e_t.repeat(n_antes, 1)], dim=-1)
 
             attention_scores = self.attention(attention_input)
 
-            a_max = attention_scores.argmax()
-            d.append(self.A[a_max])
+            d.append(attention_scores)
+
+            x = S[:, attention_scores.argmax()].unsqueeze(0).unsqueeze(-1).repeat(1, 1, self.n_antes)
+
+        d = torch.cat(d, dim=-1).transpose(0, 1)
 
         return d
 
@@ -113,16 +110,11 @@ def parse_arguments():
 def main():
     args = parse_arguments()
 
-    # # load data
-    # x, c, y = load_support2(args['raw_file'], args['categorical_file'],
-    #                 args['label_file'])
-    # S, ante_lens, antes = get_freq_itemsets(x, y)
-
-    # dataset = Support2(x, c, y, S)
-
     x, c, y, S, antes = load_data(args, 'support2')
 
     print(antes[:5])
+    print(type(antes))
+    print(len(antes))
 
     # create model
     args['n_features'] = c.shape[-1]
@@ -135,13 +127,23 @@ def main():
     n_train = S.shape[0]
     print(n_train)
 
+    optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    # optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    start_time = time.time()
     for ep in range(50):
-        d = model(c, S)
+        optimizer.zero_grad()
+
+        d_soft = model(c, S)
+
+        # print(d)
+        maxes, argmaxes = d_soft.max(dim=-1)
+
+        d = [antes[amax] for amax in argmaxes]
+        print(d)
 
         n_classes = y.shape[-1]
-        print(n_classes)
         B = torch.zeros((n_train, n_classes, len(d) + 1))
-        print(y.shape)
         for i, xi in enumerate(x):
             for j, lhs in enumerate(d):
                 if set(lhs).issubset(xi):
@@ -155,23 +157,29 @@ def main():
         # get dirichlet prior
         alpha = 1.
         priors = alpha + B.sum(0)
-        print(priors)
 
         thetas = torch.zeros((len(d) + 1, n_classes))
         for i in range(len(d) + 1):
             p_theta = Dirichlet(torch.tensor(priors[:, i]))
             thetas[i] = p_theta.rsample()
 
-        print(thetas)
-
         # compute p(y | d)
-        log_prob = 0
+        log_py = 0
         for i, yi in enumerate(y):
             for j in range(len(d) + 1):
-                log_prob += B[i, y[i, 0], j] * torch.log(thetas[j, y[i, 0]])
+                log_py += B[i, y[i, 0], j] * torch.log(thetas[j, y[i, 0]])
+
+        # compute p(d | input), as p(d_1 | input) p(d_2 | d_1, input) ...
+        log_pd = maxes.sum()
+
+        log_prob = -(log_py + log_pd)
+
+        elapsed = time.time() - start_time
+        print(f"Epoch {ep}: log-prob: {log_prob:.2f}, log p(d|x): {log_pd:.2f}, ", end='')
+        print(f"log p(y|d): {log_py:.2f} (Elapsed: {elapsed:.2f}s)")
 
         log_prob.backward()
-        sys.exit()
+        optimizer.step()
 
 if __name__ == '__main__':
     main()
