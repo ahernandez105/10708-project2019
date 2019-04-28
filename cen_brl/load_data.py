@@ -198,7 +198,9 @@ def load_data_new(args, dataset):
         C_test = C[-N_TEST:]
 
         # get antecedents from train data
-        antes = get_freq_itemsets(X_train, Y_train, min_support=30, max_lhs=2)
+        min_support = args['min_support']
+        max_lhs = args['max_lhs']
+        antes = get_freq_itemsets(X_train, Y_train, min_support=min_support, max_lhs=max_lhs)
 
         # get satisfiability matrices
         S_train = build_satisfiability_matrix(X_train, antes)
