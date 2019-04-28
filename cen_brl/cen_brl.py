@@ -126,7 +126,7 @@ class CEN_BRL_v2(nn.Module):
         For differentiability, at each timestep, output a soft weighting over all
         antecedents
         """
-        S = torch.tensor(build_satisfiability_matrix(x, self.A).transpose(), dtype=torch.float)
+        S = torch.tensor(build_satisfiability_matrix(x, self.A), dtype=torch.float)
         # print(S.size())
 
         n_train, n_antes = S.size()
@@ -158,7 +158,7 @@ class CEN_BRL_v2(nn.Module):
             # d.append(self.A[up.argmax()])
             d_soft.append(u)
 
-            S = torch.tensor(build_satisfiability_matrix(x, self.A, prefix=d).transpose(),
+            S = torch.tensor(build_satisfiability_matrix(x, self.A, prefix=d),
                             dtype=torch.float)
             S = S.unsqueeze(0)
 
@@ -261,6 +261,9 @@ def main():
     args = parse_arguments()
 
     x, c, y, S, antes = load_data(args, 'support2')
+
+    print(x[:5])
+    sys.exit()
 
     print(antes[:5])
     print(type(antes))

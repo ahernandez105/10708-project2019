@@ -24,38 +24,69 @@ def get_freq_itemsets(data, y, min_support=50, max_lhs=2):
     itemsets = list(set(itemsets))
     print("{} rules mined".format(len(itemsets)))
 
+    return itemsets
+
+    # itemsets = [('null',)] + itemsets
+
     # build S (antecedent vs. datapoint matrix)
     # S[i] is the i-th antecedent
     # S[0] is for the default rule (which satisfies all data)
 
     print("Building S...")
-    """
-    S = [set() for _ in range(len(itemsets) + 1)]
-    S[0] = set(range(len(data)))
 
-    for j, lhs in enumerate(itemsets):
-        s_lhs = set(lhs)
-        S[j+1] = set([i for i, xi in enumerate(data) if s_lhs.issubset(xi)])
-    """
+    S = build_satisfiability_matrix(data, itemsets)
 
-    n_antes = len(itemsets)
-
-    S = np.zeros((n_antes + 1, len(data)))
-    S[0] = 1.
-    for j, lhs in enumerate(itemsets):
-        s_lhs = set(lhs)
-        for i, xi in enumerate(data):
-            S[j+1, i] = s_lhs.issubset(xi)
-
-    S = S.transpose()
+    print(S.shape)
     print("S built.")
 
-    # get the cardinality of each antecendent
-    # default rule has cardinality 0
-    lhs_len = [0]
-    lhs_len.extend([len(lhs) for lhs in itemsets])
+    return itemsets
 
-    lhs_len = np.array(lhs_len)
-    itemsets = ['null'] + itemsets
-    
-    return S, lhs_len, itemsets
+def build_satisfiability_matrix(data, antes, prefix=None):
+    """
+    Build S
+    S[i,j] = 1 if datapoint x_i satisfies antecendent j,
+        but doesn't satisfy the antecedents in prefix.
+        0 otherwise.
+    The null rule is not included in S, but it is always satisfied.
+
+    data: list of datapoints
+    antes: list of antecedents
+    prefix: list of indices of previous antecedents in current decision list
+    """
+
+    antes = [set(lhs) for lhs in antes]
+    n_antes = len(antes)
+
+    # print(f"# antes: {n_antes}")
+
+    if prefix:
+        prefix = [set(antes[lhs]) for lhs in prefix]
+
+        prefix_satisfied = np.zeros((len(data),), dtype=np.bool)
+        for i, xi in enumerate(data):
+            prefix_sat = False
+            for a in prefix:
+                if a.issubset(xi):
+                    prefix_sat = True
+                    break
+
+            prefix_satisfied[i] = prefix_sat
+    else:
+        prefix_satisfied = np.zeros((len(data),), dtype=np.bool)
+
+    S = np.zeros((len(data), n_antes), dtype='f4')
+
+    # True: 1, False: 0
+    # S[0] = np.logical_not(prefix_satisfied).astype(np.float)
+    for j, lhs in enumerate(antes):
+        if 'null' in lhs:
+            # ignore the null rule
+            continue
+
+        for i, xi in enumerate(data):
+            if prefix_satisfied[i]:
+                continue
+                
+            S[i, j] = lhs.issubset(xi)
+
+    return S
