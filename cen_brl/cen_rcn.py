@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score
 
 from cen_brl import make_support2_encoder
-from load_data import load_data, Support2, load_support2_all
+from load_data import load_data, Support2, load_support2_all, load_data_new
 # from support2 import load_data as sup2_load
 
 class CEN_RCN(nn.Module):
@@ -96,12 +96,11 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('model', choices=['rcn', 'ff'])
     parser.add_argument('raw_file')
-    parser.add_argument('prefix')
-    # parser.add_argument('categorical_file')
-    # parser.add_argument('label_file')
+    parser.add_argument('categorical_file')
+    parser.add_argument('label_file')
 
     parser.add_argument('--csv')
-
+    parser.add_argument('--seed', type=int, default=42)
 
     return vars(parser.parse_args())
 
@@ -114,39 +113,24 @@ def main():
     """
     args = parse_arguments()
 
-    # data = load_support2_all(args)
-    # print(len(data['x']))
-    # print(data['x'][0])
-    # print(data['y'].shape)
-    # print(data['c'].shape)
-    # sys.exit()
+    train_data, valid_data, test_data, antes = load_data_new(args, 'support2')
+    for d in [train_data, valid_data, test_data]:
+        for k, v in d.items():
+            if type(v) is list:
+                print(k, len(v))
+            else:
+                print(k, v.shape)
 
-    # train, valid, test = sup2_load(args['csv'], nb_intervals=2)
-    # print(train[0].shape)
-    # print(train[1].shape)
-    # print(valid[0].shape)
-    # print(valid[1].shape)
-
-    # print(train[1][:5])
-    # sys.exit()
-
-    # x, c, y, S, antes = load_data(args, 'support2')
-    train_data, valid_data, test_data, antes = load_data(args, 'support2')
+        print('---')
 
     print(train_data['c'].shape)
-    # sys.exit()
 
     args['n_features'] = train_data['c'].shape[-1]
 
     model = create_model(args)
 
-    # S = torch.tensor(S, dtype=torch.float)
-    # c = torch.tensor(c, dtype=torch.float)
-    train_data['c'] = torch.tensor(train_data['c'], dtype=torch.float)
-
     n_antes = len(antes)
     print(train_data['S'].shape)
-    # print(y.shape)
 
     n_train, n_classes = train_data['y'].shape
     classes = train_data['y'].argmax(1)
@@ -155,7 +139,6 @@ def main():
     # build count matrix
     # counts[y, i]: number of datapoints with label y that satisfy
     #   antecedent i
-
     big_counts = np.zeros((n_train, n_classes, n_antes))
     big_counts[np.arange(n_train), classes] = train_data['S']
     counts = big_counts.sum(0)
@@ -210,7 +193,13 @@ def main():
             elif args['model'] == 'ff':
                 py = model(batch_c)
 
+            # avoid nan when py = 0
+            py += 1e-12
             log_prob = py.log()[torch.arange(batch_len), batch_classes].sum()
+
+            if not torch.isfinite(log_prob):
+                print("log_prob not finite??")
+                raise RuntimeError
             total_log_prob += float(log_prob)
 
             (-log_prob).backward()
@@ -223,20 +212,20 @@ def main():
             valid_classes = valid_data['y'].argmax(-1)
 
             all_preds = []
-            for batch_sample in valid_loader:
-                batch_c = batch_sample['context']
-                batch_s = batch_sample['S']
+            with torch.no_grad():
+                for batch_sample in valid_loader:
+                    batch_c = batch_sample['context']
+                    batch_s = batch_sample['S']
 
-                if args['model'] == 'rcn':
-                    pz = model(batch_c, batch_c, batch_s)
-                    py = torch.matmul(pz, pyz)
-                
-                elif args['model'] == 'ff':
-                    py = model(batch_c)
+                    if args['model'] == 'rcn':
+                        pz = model(batch_c, batch_c, batch_s)
+                        py = torch.matmul(pz, pyz)
+                    
+                    elif args['model'] == 'ff':
+                        py = model(batch_c)
 
-                predictions = py.argmax(-1)
-
-                all_preds.append(predictions)
+                    predictions = py.argmax(-1)
+                    all_preds.append(predictions)
 
             all_preds = torch.cat(all_preds)
             valid_acc = accuracy_score(valid_classes, all_preds)
@@ -250,6 +239,7 @@ def main():
 
         if not torch.isfinite(log_prob).all():
             print("Error!")
+            print(py)
             print(py.min())
             print(py.log().min())
             print(py.log().max())

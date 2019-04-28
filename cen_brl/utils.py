@@ -11,15 +11,30 @@ def get_freq_itemsets(data, y, min_support=50, max_lhs=2):
         data_pos = [x for i, x in enumerate(data) if y[i, 0] == 0]
         data_neg = [x for i, x in enumerate(data) if y[i, 0] == 1]
 
-        print(len(data_pos))
-        print(len(data_neg))
+        print("# positive class:", len(data_pos))
+        print("# negative class:", len(data_neg))
         print(len(data))
         assert len(data_pos) + len(data_neg) == len(data)
 
         itemsets = [r[0] for r in fpgrowth(data_pos, supp=min_support, zmax=max_lhs)]
         itemsets.extend([r[0] for r in fpgrowth(data_neg, supp=min_support, zmax=max_lhs)])
     else:
-        raise NotImplementedError
+        data_classes = [[] for _ in range(y.shape[-1])]
+        classes = y.argmax(-1)
+        for i, c in enumerate(classes):
+            data_classes[c].append(data[i])
+
+        for i, dc in enumerate(data_classes):
+            print(f"# {i}: {len(dc)}")
+
+        assert sum([len(dc) for dc in data_classes]) == len(data)
+
+        itemsets = [
+            [r[0] for r in fpgrowth(data_class, supp=min_support, zmax=max_lhs)]
+            for data_class in data_classes
+        ]
+        # flatten
+        itemsets = [x for class_itemset in itemsets for x in class_itemset]
 
     itemsets = list(set(itemsets))
     print("{} rules mined".format(len(itemsets)))

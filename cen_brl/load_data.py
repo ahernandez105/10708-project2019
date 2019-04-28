@@ -118,12 +118,10 @@ class Support2(Dataset):
     TODO: doesn't handle x (interpretable attributes) well currently
     """
     def __init__(self, x, c, y, S):
-        # self.S = S.astype('f4')
-        self.S = S
+        self.S = S.astype('f4')
         self.x = x
         self.y = y
-        # self.context = c.astype('f4')
-        self.context = c
+        self.context = c.astype('f4')
 
         # S: n_antes x n
         print(self.S.shape)
@@ -142,16 +140,18 @@ class Support2(Dataset):
         }
 
 def load_support2_all(args):
-    # load c
-    X, _ = load_sup(args['csv'], split=False)
+    # load c (already scaled!)
+    X, _ = load_sup(args['raw_file'], split=False)
 
     # load x
+    cat_file = args['categorical_file']
     cat_data = []
     with open(cat_file, 'r') as f:
         for line in f:
             cat_data.append(line.strip().split())
 
     # load y
+    y_file = args['label_file']
     y = np.loadtxt(y_file)
     if len(y.shape) == 1:
         y = np.array(y)
@@ -163,6 +163,71 @@ def load_support2_all(args):
         'c': X,
         'y': y
     }
+
+def load_data_new(args, dataset):
+    if dataset == 'support2':
+        data = load_support2_all(args)
+
+        C = data['c']
+        X = data['x']
+        Y = data['y']
+
+        # random split
+        N_TRAIN = 7105
+        N_VALID = 1000
+        N_TEST = 1000
+
+        seed = args['seed']
+        rng = np.random.RandomState(seed)
+        order = rng.permutation(len(X))
+
+        X = [X[i] for i in order]
+        Y = Y[order]
+        C = C[order]
+
+        X_train = X[:N_TRAIN]
+        Y_train = Y[:N_TRAIN]
+        C_train = C[:N_TRAIN]
+
+        X_valid = X[N_TRAIN : N_TRAIN+N_VALID]
+        Y_valid = Y[N_TRAIN : N_TRAIN+N_VALID]
+        C_valid = C[N_TRAIN : N_TRAIN+N_VALID]
+
+        X_test = X[-N_TEST:]
+        Y_test = Y[-N_TEST:]
+        C_test = C[-N_TEST:]
+
+        # get antecedents from train data
+        antes = get_freq_itemsets(X_train, Y_train, min_support=30, max_lhs=2)
+
+        # get satisfiability matrices
+        S_train = build_satisfiability_matrix(X_train, antes)
+        S_valid = build_satisfiability_matrix(X_valid, antes)
+        S_test = build_satisfiability_matrix(X_test, antes)
+
+        train_data = {
+            'x': X_train,
+            'y': Y_train,
+            'c': C_train,
+            'S': S_train,
+        }
+        valid_data = {
+            'x': X_valid,
+            'y': Y_valid,
+            'c': C_valid,
+            'S': S_valid,
+        }
+        test_data = {
+            'x': X_test,
+            'y': Y_test,
+            'c': C_test,
+            'S': S_test,
+        }
+
+        return train_data, valid_data, test_data, antes
+
+    else:
+        raise NotImplementedError
 
 def load_data(args, dataset):
     if dataset == 'support2':
