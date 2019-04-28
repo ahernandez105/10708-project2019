@@ -17,10 +17,10 @@ from load_data import load_data, Support2, load_support2_all, load_data_new
 # from support2 import load_data as sup2_load
 
 class CEN_RCN(nn.Module):
-    def __init__(self, encoder_args, encoding_dim, n_features, n_hidden, mask_u=False):
+    def __init__(self, context_encoder, encoding_dim, n_features, n_hidden, mask_u=False):
         super(CEN_RCN, self).__init__()
 
-        self.context_encoder = make_support2_encoder(encoder_args)
+        self.context_encoder = context_encoder
 
         self.fusion = nn.Linear(encoding_dim + n_features, n_hidden)
         self.input_encoder = nn.Linear(n_features, n_hidden)
@@ -28,8 +28,6 @@ class CEN_RCN(nn.Module):
         self.mask_u = mask_u
         
     def forward(self, context, x, S):
-        phi = self.context_encoder(context)
-
         # dot-product attention between rule representations and
         # fused rep of context and attributes
 
@@ -37,8 +35,9 @@ class CEN_RCN(nn.Module):
         # x_rep: n_train x n_hidden
         # S: n_rules x n_train
         # S_rep: n_rules x n_hidden
-
         # h: n_train x n_hidden
+
+        phi = self.context_encoder(context)
         h = self.fusion(torch.cat([phi, x], dim=-1))
 
         x_rep = self.input_encoder(x)
@@ -67,26 +66,25 @@ class CEN_RCN(nn.Module):
         return pz
 
 class FF(nn.Module):
-    def __init__(self, encoder_args, encoding_dim):
+    def __init__(self, context_encoder, encoding_dim, output_dim):
+        """
+        Directly predict p(y|x)
+        """
         super(FF, self).__init__()
 
-        self.context_encoder = make_support2_encoder(encoder_args)
+        self.context_encoder = context_encoder
 
         self.final = nn.Sequential(
             nn.ReLU(True),
-            nn.Linear(encoding_dim, 2)
+            nn.Linear(encoding_dim, output_dim)
         )
 
     def forward(self, x):
-        # h = F.relu(self.context_hidden(x))
-        # phi = self.context_out(h)
         phi = self.context_encoder(x)
         return F.softmax(self.final(phi), dim=-1)
 
 def create_model(args):
-    # TODO: model hyperparameters should be arguments
-
-    encoding_dim = 10
+    encoding_dim = args['encoding_dim']
 
     n_features = args['n_features']
 
@@ -95,14 +93,15 @@ def create_model(args):
         'n_hidden': args['n_encoder_hidden'],
         'encoding_dim': encoding_dim
     }
+    context_encoder = make_support2_encoder(encoder_args)
 
     # for now, x = c
     n_hidden = args['n_rcn_hidden']
 
     if args['model'] == 'rcn':
-        model = CEN_RCN(encoder_args, encoding_dim, n_features, n_hidden, args['rcn_mask'])
+        model = CEN_RCN(context_encoder, encoding_dim, n_features, n_hidden, mask_u=args['rcn_mask'])
     elif args['model'] == 'ff':
-        model = FF(encoder_args, encoding_dim)
+        model = FF(context_encoder, encoding_dim, args['n_classes'])
 
     return model
 
@@ -127,6 +126,25 @@ def eval_support2(y_true, y_pred):
 
         print(f"{percentile}th percentile: cutoff {percentile_cutoff} - acc {acc_score:.2f}%")
 
+def evaluate_model(model, dataloader):
+    all_preds = []
+    for batch_sample in dataloader:
+        batch_c = batch_sample['context'].to(device)
+        batch_s = batch_sample['S'].to(device)
+
+        if args['model'] == 'rcn':
+            pz = model(batch_c, batch_c, batch_s)
+            py = torch.matmul(pz, pyz)
+        
+        elif args['model'] == 'ff':
+            py = model(batch_c)
+
+        predictions = py.argmax(-1)
+        all_preds.append(predictions)
+
+    all_preds = torch.cat(all_preds)
+    valid_acc = accuracy_score(valid_classes, all_preds)
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('model', choices=['rcn', 'ff'])
@@ -142,8 +160,9 @@ def parse_arguments():
     parser.add_argument('--n_epochs', type=int, default=200)
 
     # model hyperparameters
-    parser.add_argument('--n_encoder_hidden', type=int, default=300)
-    parser.add_argument('--n_rcn_hidden', type=int, default=300)
+    parser.add_argument('--encoding_dim', type=int, default=150)
+    parser.add_argument('--n_encoder_hidden', type=int, default=150)
+    parser.add_argument('--n_rcn_hidden', type=int, default=150)
     parser.add_argument('--rcn_mask', action='store_true')
     parser.add_argument('--patience', type=int, default=5)
     parser.add_argument('--min_support', type=int, default=30)
@@ -179,12 +198,11 @@ def main():
     else:
         device = torch.device('cpu')
 
-    model = create_model(args).to(device)
-
     n_antes = len(antes)
     print(train_data['S'].shape)
 
     n_train, n_classes = train_data['y'].shape
+    args['n_classes'] = n_classes
     classes = train_data['y'].argmax(1)
     print("Class distribution:", train_data['y'].sum(0))
 
@@ -206,6 +224,9 @@ def main():
 
     # p(y|z): normalized counts of number of classes that satisfy each antecedent
     pyz = torch.tensor((counts / counts.sum(0)).transpose(), dtype=torch.float).to(device)
+
+    # create model
+    model = create_model(args).to(device)
 
     print("Params:")
     for n, p in model.named_parameters():
@@ -258,7 +279,7 @@ def main():
                 py = model(batch_c)
 
             # avoid nan when py = 0
-            py += 1e-12
+            py = py + 1e-12
             log_prob = py.log()[torch.arange(batch_len), batch_classes].sum()
 
             # compute/minimize RAE?
