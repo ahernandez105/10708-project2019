@@ -228,7 +228,8 @@ def parse_arguments():
     parser.add_argument('--cuda', action='store_true')
 
     parser.add_argument('--csv')
-    parser.add_argument('--seed', type=int, default=42)
+    # parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--seed', type=int)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--n_epochs', type=int, default=200)
 
@@ -280,7 +281,7 @@ def main():
     n_train, n_classes = train_data['y'].shape
     args['n_classes'] = n_classes
     classes = train_data['y'].argmax(1)
-    print("Class distribution:", train_data['y'].sum(0))
+    print("Class distribution:", train_data['y'].sum(0).astype(int).tolist())
 
     # sanity check - classification acc if just predict majority class
     majority_class = train_data['y'].sum(0).argmax()
@@ -469,16 +470,16 @@ def main():
 
     test_classes = test_data['y'].argmax(-1)
 
-    print(all_py[:10])
+    print(all_py[:5])
     print(all_preds[:10])
     print(test_classes[:10])
 
     # get distribution of predictions
     pred_y = np.zeros_like(test_data['y'])
     pred_y[np.arange(pred_y.shape[0]), all_py.argmax(-1)] = 1
-    print("Pred distribution:", pred_y.sum(0))
+    print("Pred distribution:", pred_y.sum(0).astype(int).tolist())
 
-    print("Test distribution:", test_data['y'].sum(0))
+    print("Test distribution:", test_data['y'].sum(0).astype(int).tolist())
     print("Test accuracy: {:.4f}".format(accuracy_score(test_classes, all_preds)))
 
     # get Acc@T and RAE metrics on test set
@@ -534,8 +535,10 @@ def main():
     line = ','.join([str(summary[h]) for h in headers])
     print(line)
 
-    with open(args['outfile'], 'a') as f:
-        f.write(line)
+    if args['outfile']:
+        with open(args['outfile'], 'a') as f:
+            f.write(line)
+            f.write('\n')
 
 if __name__ == '__main__':
     main()
