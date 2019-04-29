@@ -2,6 +2,7 @@ import time
 import argparse
 import sys
 import pprint
+from collections import Counter
 
 import numpy as np
 import torch
@@ -62,6 +63,7 @@ class CEN_RCN(nn.Module):
         else:
             pz = F.softmax(u, dim=-1)
 
+        # TODO: add sequence transition parameters
 
         return pz
 
@@ -82,6 +84,13 @@ class FF(nn.Module):
     def forward(self, x):
         phi = self.context_encoder(x)
         return F.softmax(self.final(phi), dim=-1)
+
+def rae(y_true, y_pred):
+    n_classes = y_true.shape[-1]
+
+    expected_death = (torch.arange(n_classes, dtype=torch.float) * py).sum(-1)
+    diff = expected_death - batch_classes.type_as(expected_death)
+    rae = torch.min(torch.tensor(1.), torch.abs(diff / expected_death))
 
 def create_model(args):
     encoding_dim = args['encoding_dim']
@@ -105,26 +114,86 @@ def create_model(args):
 
     return model
 
+def accuracy_score_self(y_true, y_pred, t):
+    """
+    y_true: batch_size x n_classes
+    y_pred: 
+
+    based on CEN implementation
+    """
+
+    censored_indicator = 1.
+
+    y_true_c = y_true[:, :, 0]
+    y_true_e = y_true[:, :, 1]
+
+    # ignore censored values
+    not_censored_at_t = np.not_equal(y_true_c[:, t], censored_indicator)
+    y_true_uc = y_true_e[not_censored_at_t]
+    y_pred_uc = y_pred[not_censored_at_t]
+
+    # compute survival probabilities
+    # y_pred[:, t] is the probability that the patient dies at time t
+    # so cumulative sum gives us the probability that the patient dies by time t
+    death_prob = np.minimum(np.cumsum(y_pred_uc, axis=-1), 1.)
+    survival_prob = 1 - death_prob
+
+    survived = 1 - y_true_uc[:, t]
+    survival_pred = (survival_prob[:, t] > 0.5).astype(survived.dtype)
+
+    acc = accuracy_score(survived, survival_pred)
+
+    print(f"Acc@{t}: {acc:.4f}")
+
+    return acc
+
+def rae_loss_self(y_true, y_pred):
+    """
+    only calculate RAE for non-censored patients, like in CEN paper
+    """
+    censored_indicator = 1.
+
+    # n = y_true.shape[0]
+    # m = y_true.shape[1]
+
+    not_censored = np.not_equal(y_true[:, -1, 0], censored_indicator)
+
+    death_prob = np.minimum(np.cumsum(y_pred, axis=-1), 1.)
+    pred_time = 1 + (death_prob > 0.5).astype('float32').argmax(-1)
+
+    pred_time_nc = pred_time[not_censored]
+    
+    nc = pred_time_nc.shape[0]
+
+    y_true_nc = y_true[:, :, 1][not_censored]
+    # argmax returns first max index
+    true_time_nc = 1 + y_true_nc.argmax(-1).astype('float32')
+
+    loss_nc = np.abs(pred_time_nc - true_time_nc) / pred_time_nc
+    rae_loss = loss_nc.mean()
+
+    print(f"Mean RAE on non-censored: {rae_loss:.4f}\t({nc} not censored)")
+
+    return rae_loss
+
 def eval_support2(y_true, y_pred):
     """
     Calculate RAE and acc at percentiles
     """
 
-    # calculate percentiles
-    percentile_25 = np.percentile(y_true, 25)
-    percentile_50 = np.percentile(y_true, 50)
-    percentile_75 = np.percentile(y_true, 75)
+    percentile_cutoffs = [1, 7, 32]
 
     # compute percentile ground truths and predictions
-    for percentile in [25, 50, 75]:
-        percentile_cutoff = np.percentile(y_true, percentile)
+    # for percentile in [25, 50, 75]:
+    for percentile, cutoff in zip([25, 50, 75], percentile_cutoffs):
+        # percentile_cutoff = np.percentile(y_true, percentile)
 
-        y_true_p = np.where(y_true <= percentile_cutoff, 1, 0)
-        y_pred_p = np.where(y_pred <= percentile_cutoff, 1, 0)
+        y_true_p = np.where(y_true <= cutoff, 1, 0)
+        y_pred_p = np.where(y_pred <= cutoff, 1, 0)
 
         acc_score = accuracy_score(y_true_p, y_pred_p) * 100
 
-        print(f"{percentile}th percentile: cutoff {percentile_cutoff} - acc {acc_score:.2f}%")
+        print(f"{percentile}th percentile: cutoff {cutoff} - acc {acc_score:.2f}%")
 
 def evaluate_model(model, dataloader):
     all_preds = []
@@ -145,6 +214,10 @@ def evaluate_model(model, dataloader):
     all_preds = torch.cat(all_preds)
     valid_acc = accuracy_score(valid_classes, all_preds)
 
+def write_results(results, outfile):
+    f = open(outfile, 'w')
+    writer = csv.DictWriter(f, fieldnames=results.keys())
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('model', choices=['rcn', 'ff'])
@@ -159,6 +232,8 @@ def parse_arguments():
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--n_epochs', type=int, default=200)
 
+    parser.add_argument('--outfile')
+
     # model hyperparameters
     parser.add_argument('--encoding_dim', type=int, default=150)
     parser.add_argument('--n_encoder_hidden', type=int, default=150)
@@ -167,6 +242,7 @@ def parse_arguments():
     parser.add_argument('--patience', type=int, default=5)
     parser.add_argument('--min_support', type=int, default=30)
     parser.add_argument('--max_lhs', type=int, default=3)
+    parser.add_argument('--loss', choices=['log_prob', 'rae'], default='log_prob')
 
     return vars(parser.parse_args())
 
@@ -215,9 +291,9 @@ def main():
     # build count matrix
     # counts[y, i]: number of datapoints with label y that satisfy
     #   antecedent i
-    big_counts = np.zeros((n_train, n_classes, n_antes))
+    big_counts = np.zeros((n_train, n_classes, n_antes), dtype=np.uint8)
     big_counts[np.arange(n_train), classes] = train_data['S']
-    counts = big_counts.sum(0)
+    counts = big_counts.sum(0).astype(np.float)
 
     assert (n_classes, n_antes) == counts.shape
     assert np.allclose(counts.sum(0), train_data['S'].sum(0))
@@ -284,6 +360,12 @@ def main():
 
             # compute/minimize RAE?
             # also other metrics
+            # RAE = min(1, |(p-t) / p|),
+            # where p and t are the predicted and true survival times
+            # expected_death = (torch.arange(n_classes, dtype=torch.float) * py).sum(-1)
+            # diff = expected_death - batch_classes.type_as(expected_death)
+            # rae = torch.min(torch.tensor(1.), torch.abs(diff / expected_death))
+            # rae.mean().backward()
 
             if not torch.isfinite(log_prob):
                 print("log_prob not finite??")
@@ -299,6 +381,7 @@ def main():
             valid_classes = valid_data['y'].argmax(-1)
 
             all_preds = []
+            all_py = []
             with torch.no_grad():
                 for batch_sample in valid_loader:
                     batch_c = batch_sample['context'].to(device)
@@ -313,14 +396,23 @@ def main():
 
                     predictions = py.argmax(-1)
                     all_preds.append(predictions)
+                    all_py.append(py)
 
             all_preds = torch.cat(all_preds)
+            all_py = torch.cat(all_py)
             valid_acc = accuracy_score(valid_classes, all_preds)
+
+            # RAE
+            expected_death = (np.arange(n_classes) * all_py.numpy()).sum(-1)
+            diff = expected_death - valid_classes
+            valid_rae = np.minimum(1, np.abs(diff)).mean()
 
             print(all_preds[:10])
             print(valid_classes[:10])
+            print(diff[:10])
 
             log_line = f"Ep {ep:<5} -  log prob: {total_log_prob:.4f}, validation acc: {valid_acc:.4f}"
+            log_line += f", validation RAE: {valid_rae:.4f}"
             log_line += "\t({:.3f}s)".format(time.time() - start_time)
             print(log_line)
 
@@ -380,19 +472,70 @@ def main():
     print(all_py[:10])
     print(all_preds[:10])
     print(test_classes[:10])
+
+    # get distribution of predictions
+    pred_y = np.zeros_like(test_data['y'])
+    pred_y[np.arange(pred_y.shape[0]), all_py.argmax(-1)] = 1
+    print("Pred distribution:", pred_y.sum(0))
+
     print("Test distribution:", test_data['y'].sum(0))
     print("Test accuracy: {:.4f}".format(accuracy_score(test_classes, all_preds)))
 
-    if args['model'] == 'rcn':
-        all_pz = torch.cat(all_pz, dim=0)
-        selected_antes = [antes[i] for i in all_pz.argmax(-1)]
+    # get Acc@T and RAE metrics on test set
+    accs = {}
+    for t in [1, 7, 32]:
+        accs[t] = accuracy_score_self(test_data['y2'], all_py.numpy(), t)
 
-        for i, (a, idx) in enumerate(zip(selected_antes, all_pz.argmax(-1))):
-            print(a, pyz[idx])
-            if i > 10:
-                break
+    expected_death = (np.arange(n_classes) * all_py.numpy()).sum(-1)
+    diff = expected_death - test_classes
+    test_rae = np.minimum(1, np.abs(diff)).mean()
+    print(f"Test RAE: {test_rae:.4f}")
+
+    rae_nc = rae_loss_self(test_data['y2'], all_py.numpy())
+
+    # if args['model'] == 'rcn':
+    #     all_pz = torch.cat(all_pz, dim=0)
+    #     selected_antes = [antes[i] for i in all_pz.argmax(-1)]
+
+    #     for i, (a, idx) in enumerate(zip(selected_antes, all_pz.argmax(-1))):
+    #         print(a, pyz[idx])
+    #         if i > 10:
+    #             break
 
     eval_support2(test_classes, all_preds)
+
+    # TODO: save all values 
+
+    summary = {
+        'encoding_dim': args['encoding_dim'],
+        'n_encoder_hidden': args['n_encoder_hidden'],
+        'n_rcn_hidden': args['n_rcn_hidden'],
+        'min_support': args['min_support'],
+        'max_lhs': args['max_lhs'],
+        'n_antes': n_antes,
+        'rae': rae_nc,
+    }
+    for t, acc in accs.items():
+        summary[f'Acc@{t}'] = acc
+    
+    headers = [
+        'encoding_dim',
+        'n_encoder_hidden',
+        'n_rcn_hidden',
+        'min_support',
+        'max_lhs',
+        'n_antes',
+        'rae',
+        'Acc@1',
+        'Acc@7',
+        'Acc@32'
+    ]
+
+    line = ','.join([str(summary[h]) for h in headers])
+    print(line)
+
+    with open(args['outfile'], 'a') as f:
+        f.write(line)
 
 if __name__ == '__main__':
     main()

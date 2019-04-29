@@ -24,8 +24,9 @@ def get_freq_itemsets(data, y, min_support=50, max_lhs=2):
         for i, c in enumerate(classes):
             data_classes[c].append(data[i])
 
-        for i, dc in enumerate(data_classes):
-            print(f"# {i}: {len(dc)}")
+        print([len(dc) for dc in data_classes])
+        # for i, dc in enumerate(data_classes):
+        #     print(f"# {i}: {len(dc)}")
 
         assert sum([len(dc) for dc in data_classes]) == len(data)
 
@@ -89,7 +90,8 @@ def build_satisfiability_matrix(data, antes, prefix=None):
     else:
         prefix_satisfied = np.zeros((len(data),), dtype=np.bool)
 
-    S = np.zeros((len(data), n_antes), dtype='f4')
+    # S = np.zeros((len(data), n_antes), dtype='f4')
+    S = np.zeros((len(data), n_antes), dtype=bool)
 
     # True: 1, False: 0
     # S[0] = np.logical_not(prefix_satisfied).astype(np.float)

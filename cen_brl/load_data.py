@@ -141,7 +141,7 @@ class Support2(Dataset):
 
 def load_support2_all(args):
     # load c (already scaled!)
-    X, _ = load_sup(args['raw_file'], split=False)
+    X, Y = load_sup(args['raw_file'], split=False)
 
     # load x
     cat_file = args['categorical_file']
@@ -156,12 +156,11 @@ def load_support2_all(args):
     if len(y.shape) == 1:
         y = np.array(y)
 
-    # TODO: do random splits here?
-
     return {
         'x': cat_data,
         'c': X,
-        'y': y
+        'y': y,
+        'y2': Y
     }
 
 def load_data_new(args, dataset):
@@ -171,6 +170,7 @@ def load_data_new(args, dataset):
         C = data['c']
         X = data['x']
         Y = data['y']
+        Y_extra = data['y2']
 
         # random split
         N_TRAIN = 7105
@@ -183,18 +183,22 @@ def load_data_new(args, dataset):
 
         X = [X[i] for i in order]
         Y = Y[order]
+        Y2 = Y_extra[order]
         C = C[order]
 
         X_train = X[:N_TRAIN]
         Y_train = Y[:N_TRAIN]
+        Y2_train = Y2[:N_TRAIN]
         C_train = C[:N_TRAIN]
 
         X_valid = X[N_TRAIN : N_TRAIN+N_VALID]
         Y_valid = Y[N_TRAIN : N_TRAIN+N_VALID]
+        Y2_valid = Y2[N_TRAIN : N_TRAIN+N_VALID]
         C_valid = C[N_TRAIN : N_TRAIN+N_VALID]
 
         X_test = X[-N_TEST:]
         Y_test = Y[-N_TEST:]
+        Y2_test = Y2[-N_TEST:]
         C_test = C[-N_TEST:]
 
         # get antecedents from train data
@@ -212,18 +216,21 @@ def load_data_new(args, dataset):
             'y': Y_train,
             'c': C_train,
             'S': S_train,
+            'y2': Y2_train,
         }
         valid_data = {
             'x': X_valid,
             'y': Y_valid,
             'c': C_valid,
             'S': S_valid,
+            'y2': Y2_valid,
         }
         test_data = {
             'x': X_test,
             'y': Y_test,
             'c': C_test,
             'S': S_test,
+            'y2': Y2_test,
         }
 
         return train_data, valid_data, test_data, antes
