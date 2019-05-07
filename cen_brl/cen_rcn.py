@@ -253,6 +253,167 @@ def compute_pyz(n_train, n_classes, n_antes, Y, S, alpha):
 
     return (counts / counts.sum(0)).transpose()
 
+def train_model(args, model, dataloader, valid_dataloader=None):
+    start_time = time.time()
+    n_epochs = args['n_epochs']
+    device = args['device']
+
+    # build optimizers
+    # optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
+    # optimizer = optim.SGD(model.parameters(), lr=1)
+
+    # early stopping metrics
+    best_val_acc = 0.
+    no_improvement_vals = 0
+    best_model = None
+
+    for ep in range(1, n_epochs + 1):
+        total_log_prob = 0.
+        for batch_sample in dataloader:
+            
+            batch_c = batch_sample['context'].to(device)
+            batch_s = batch_sample['S'].to(device)
+            batch_classes = batch_sample['y'].argmax(1).to(device)
+            batch_len = len(batch_classes)
+
+            optimizer.zero_grad()
+
+            if args['model'] == 'rcn':
+                pz, py = model(batch_c, batch_c, batch_s)
+                # compute p(y | x) = \sum_z p(y|z) p(z|x)
+                # p(z|x) is model output
+                # p(y|z) is precomputed
+                # py = torch.matmul(pz, pyz)
+
+            elif args['model'] == 'ff':
+                py = model(batch_c)
+
+            # avoid nan when py = 0
+            py = py + 1e-12
+            log_prob = py.log()[torch.arange(batch_len), batch_classes].sum()
+            # log_prob = py[torch.arange(batch_len, device=device), batch_classes].sum()
+
+            # compute/minimize RAE?
+            # also other metrics
+            # RAE = min(1, |(p-t) / p|),
+            # where p and t are the predicted and true survival times
+            # expected_death = (torch.arange(n_classes, dtype=torch.float) * py).sum(-1)
+            # diff = expected_death - batch_classes.type_as(expected_death)
+            # rae = torch.min(torch.tensor(1.), torch.abs(diff / expected_death))
+            # rae.mean().backward()
+
+            if not torch.isfinite(log_prob):
+                print("log_prob not finite??")
+                raise RuntimeError
+            total_log_prob += float(log_prob)
+
+            (-log_prob).backward()
+
+            optimizer.step()
+
+        if ep % 10 == 0 and valid_dataloader is not None:
+            # validation
+
+            all_preds = []
+            all_py = []
+            valid_y = []
+            with torch.no_grad():
+                for batch_sample in valid_dataloader:
+                    batch_c = batch_sample['context'].to(device)
+                    batch_s = batch_sample['S'].to(device)
+
+                    if args['model'] == 'rcn':
+                        pz, py = model(batch_c, batch_c, batch_s)
+                        # py = torch.matmul(pz, pyz)
+                    
+                    elif args['model'] == 'ff':
+                        py = model(batch_c)
+
+                    predictions = py.argmax(-1)
+                    all_preds.append(predictions)
+                    all_py.append(py)
+                    valid_y.append(batch_sample['y'].numpy())
+
+            all_preds = torch.cat(all_preds)
+            all_py = torch.cat(all_py)
+            valid_y = np.concatenate(valid_y).argmax(-1)
+            valid_acc = accuracy_score(valid_y, all_preds.numpy())
+
+            # RAE
+            n_classes = all_py.size()[-1]
+            expected_death = (np.arange(n_classes) * all_py.cpu().numpy()).sum(-1)
+            diff = expected_death - valid_y
+            valid_rae = np.minimum(1, np.abs(diff)).mean()
+
+            print(all_preds[:10])
+            print(valid_y[:10])
+            print(diff[:10])
+
+            log_line = f"Ep {ep:<5} -  log prob: {total_log_prob:.4f}, validation acc: {valid_acc:.4f}"
+            log_line += f", validation RAE: {valid_rae:.4f}"
+            log_line += "\t({:.3f}s)".format(time.time() - start_time)
+            print(log_line)
+
+            # early stopping
+            if valid_acc >= best_val_acc:
+                best_val_acc = valid_acc
+                no_improvement_vals = 0
+                # save best model so far
+                best_model = model.state_dict()
+
+            else:
+                no_improvement_vals += 1
+                if no_improvement_vals > args['patience']:
+                    print("Early stopping!")
+                    break
+
+        if not torch.isfinite(log_prob).all():
+            print("Error!")
+            print(py)
+            print(py.min())
+            print(py.log().min())
+            print(py.log().max())
+            raise RuntimeError
+
+    # load best model
+    if best_model is not None:
+        model.load_state_dict(best_model)
+
+    return model
+
+def pred_model(args, model, dataloader):
+    device = args['device']
+
+    # make predictions with associated antecedents
+    all_preds = []
+    all_py = []
+    all_pz = []
+    with torch.no_grad():
+        for batch_sample in dataloader:
+            batch_c = batch_sample['context'].to(device)
+            batch_s = batch_sample['S'].to(device)
+
+            if args['model'] == 'rcn':
+                pz, py = model(batch_c, batch_c, batch_s)
+                # py = torch.matmul(pz, pyz)
+
+                all_pz.append(pz)
+            
+            elif args['model'] == 'ff':
+                py = model(batch_c)
+
+            predictions = py.argmax(-1)
+
+            all_py.append(py)
+            all_preds.append(predictions)
+
+    all_preds = torch.cat(all_preds)
+    all_py = torch.cat(all_py, dim=0)
+    all_pz = torch.cat(all_pz, dim=0)
+
+    return all_preds, all_py, all_pz
+
 def evaluate_model(model, dataloader):
     all_preds = []
     for batch_sample in dataloader:
@@ -271,6 +432,40 @@ def evaluate_model(model, dataloader):
 
     all_preds = torch.cat(all_preds)
     valid_acc = accuracy_score(valid_classes, all_preds)
+
+def compute_support2_metrics(args, y_pred, y_probs, y_true, y_true_full):
+    """
+    Compute RAE and Acc@X metrics on predictions
+    """
+
+    test_classes = y_true.argmax(-1)
+
+    # print(all_py[:5])
+    print(y_pred[:10])
+    print(y_true[:10])
+
+    # get distribution of predictions
+    pred_y = np.zeros_like(y_true)
+    pred_y[np.arange(pred_y.shape[0]), y_probs.argmax(-1)] = 1
+    print("Pred distribution:", pred_y.sum(0).astype(int).tolist())
+
+    print("Test distribution:", y_true.sum(0).astype(int).tolist())
+    print("Test accuracy: {:.4f}".format(accuracy_score(test_classes, y_pred)))
+
+    # get Acc@T and RAE metrics on test set
+    accs = {}
+    for t in [1, 7, 32]:
+        accs[t] = accuracy_score_self(y_true_full, y_probs.cpu().numpy(), t)
+
+    n_classes = y_probs.shape[-1]
+    expected_death = (np.arange(n_classes) * y_probs.cpu().numpy()).sum(-1)
+    diff = expected_death - test_classes
+    test_rae = np.minimum(1, np.abs(diff)).mean()
+    print(f"Test RAE: {test_rae:.4f}")
+
+    rae_nc = rae_loss_self(y_true_full, y_probs.cpu().numpy())
+
+    return accs, test_rae, rae_nc
 
 def write_results(results, outfile):
     f = open(outfile, 'w')
@@ -291,6 +486,7 @@ def parse_arguments():
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--n_epochs', type=int, default=200)
 
+    parser.add_argument('--print_rules', action='store_true')
     parser.add_argument('--outfile')
 
     # model hyperparameters
@@ -310,9 +506,8 @@ def parse_arguments():
 def main():
     """
     TODO:
-    - batching
-    - only pick antecedents that satisfy the datapoint
-    - also output best antecedent (using argmax)
+    - subsample antecedents
+    - add support for MNIST and IMDB
     """
     args = parse_arguments()
 
@@ -334,6 +529,7 @@ def main():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
+    args['device'] = device
 
     n_antes = len(antes)
     print(train_data['S'].shape)
@@ -371,183 +567,24 @@ def main():
 
     test_dataset = Support2(test_data['x'], test_data['c'], test_data['y'], test_data['S'])
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
-    
-    # optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
-    optimizer = optim.Adam(model.parameters(), lr=0.0001)
-    # optimizer = optim.SGD(model.parameters(), lr=1)
 
-    start_time = time.time()
-    n_epochs = args['n_epochs']
+    model = train_model(args,
+                        model,
+                        train_loader,
+                        valid_dataloader=valid_loader)
 
-    # early stopping metrics
-    best_val_acc = 0.
-    no_improvement_vals = 0
-    best_model = None
+    all_preds, all_py, all_pz = pred_model(args, model, test_loader)
 
-    for ep in range(n_epochs):
-        total_log_prob = 0.
-        for batch_sample in train_loader:
-            
-            batch_c = batch_sample['context'].to(device)
-            batch_s = batch_sample['S'].to(device)
-            batch_classes = batch_sample['y'].argmax(1).to(device)
-            batch_len = len(batch_classes)
-
-            optimizer.zero_grad()
-
-            if args['model'] == 'rcn':
-                pz, py = model(batch_c, batch_c, batch_s)
-
-                # compute p(y | x) = \sum_z p(y|z) p(z|x)
-                # p(z|x) is model output
-                # p(y|z) is precomputed
-                # py = torch.matmul(pz, pyz)
-
-            elif args['model'] == 'ff':
-                py = model(batch_c)
-
-            # avoid nan when py = 0
-            py = py + 1e-12
-            log_prob = py.log()[torch.arange(batch_len), batch_classes].sum()
-            # log_prob = py[torch.arange(batch_len, device=device), batch_classes].sum()
-
-            # compute/minimize RAE?
-            # also other metrics
-            # RAE = min(1, |(p-t) / p|),
-            # where p and t are the predicted and true survival times
-            # expected_death = (torch.arange(n_classes, dtype=torch.float) * py).sum(-1)
-            # diff = expected_death - batch_classes.type_as(expected_death)
-            # rae = torch.min(torch.tensor(1.), torch.abs(diff / expected_death))
-            # rae.mean().backward()
-
-            if not torch.isfinite(log_prob):
-                print("log_prob not finite??")
-                raise RuntimeError
-            total_log_prob += float(log_prob)
-
-            (-log_prob).backward()
-
-            optimizer.step()
-
-        if ep % 10 == 0:
-            # validation
-            valid_classes = valid_data['y'].argmax(-1)
-
-            all_preds = []
-            all_py = []
-            with torch.no_grad():
-                for batch_sample in valid_loader:
-                    batch_c = batch_sample['context'].to(device)
-                    batch_s = batch_sample['S'].to(device)
-
-                    if args['model'] == 'rcn':
-                        pz, py = model(batch_c, batch_c, batch_s)
-                        # py = torch.matmul(pz, pyz)
-                    
-                    elif args['model'] == 'ff':
-                        py = model(batch_c)
-
-                    predictions = py.argmax(-1)
-                    all_preds.append(predictions)
-                    all_py.append(py)
-
-            all_preds = torch.cat(all_preds)
-            all_py = torch.cat(all_py)
-            valid_acc = accuracy_score(valid_classes, all_preds)
-
-            # RAE
-            expected_death = (np.arange(n_classes) * all_py.cpu().numpy()).sum(-1)
-            diff = expected_death - valid_classes
-            valid_rae = np.minimum(1, np.abs(diff)).mean()
-
-            print(all_preds[:10])
-            print(valid_classes[:10])
-            print(diff[:10])
-
-            log_line = f"Ep {ep:<5} -  log prob: {total_log_prob:.4f}, validation acc: {valid_acc:.4f}"
-            log_line += f", validation RAE: {valid_rae:.4f}"
-            log_line += "\t({:.3f}s)".format(time.time() - start_time)
-            print(log_line)
-
-            # early stopping
-            if valid_acc >= best_val_acc:
-                best_val_acc = valid_acc
-                no_improvement_vals = 0
-                # save best model so far
-                best_model = model.state_dict()
-
-            else:
-                no_improvement_vals += 1
-                if no_improvement_vals > args['patience']:
-                    print("Early stopping!")
-                    break
-
-        if not torch.isfinite(log_prob).all():
-            print("Error!")
-            print(py)
-            print(py.min())
-            print(py.log().min())
-            print(py.log().max())
-            raise RuntimeError
-
-    # load best model
-    if best_model is not None:
-        model.load_state_dict(best_model)
-
-    # make predictions with associated antecedents
-    all_preds = []
-    all_py = []
-    all_pz = []
-    with torch.no_grad():
-        for batch_sample in test_loader:
-            batch_c = batch_sample['context'].to(device)
-            batch_s = batch_sample['S'].to(device)
-
-            if args['model'] == 'rcn':
-                pz, py = model(batch_c, batch_c, batch_s)
-                # py = torch.matmul(pz, pyz)
-
-                all_pz.append(pz)
-            
-            elif args['model'] == 'ff':
-                py = model(batch_c)
-
-            predictions = py.argmax(-1)
-
-            all_py.append(py)
-            all_preds.append(predictions)
-
-    all_preds = torch.cat(all_preds)
-    all_py = torch.cat(all_py, dim=0)
+    accs, test_rae, rae_nc = compute_support2_metrics(args,
+                                                    all_preds,
+                                                    all_py,
+                                                    test_data['y'],
+                                                    test_data['y2'])
 
     test_classes = test_data['y'].argmax(-1)
 
-    # print(all_py[:5])
-    print(all_preds[:10])
-    print(test_classes[:10])
-
-    # get distribution of predictions
-    pred_y = np.zeros_like(test_data['y'])
-    pred_y[np.arange(pred_y.shape[0]), all_py.argmax(-1)] = 1
-    print("Pred distribution:", pred_y.sum(0).astype(int).tolist())
-
-    print("Test distribution:", test_data['y'].sum(0).astype(int).tolist())
-    print("Test accuracy: {:.4f}".format(accuracy_score(test_classes, all_preds)))
-
-    # get Acc@T and RAE metrics on test set
-    accs = {}
-    for t in [1, 7, 32]:
-        accs[t] = accuracy_score_self(test_data['y2'], all_py.cpu().numpy(), t)
-
-    expected_death = (np.arange(n_classes) * all_py.cpu().numpy()).sum(-1)
-    diff = expected_death - test_classes
-    test_rae = np.minimum(1, np.abs(diff)).mean()
-    print(f"Test RAE: {test_rae:.4f}")
-
-    rae_nc = rae_loss_self(test_data['y2'], all_py.cpu().numpy())
-
-    if args['model'] == 'rcn':
-        all_pz = torch.cat(all_pz, dim=0)
+    if args['model'] == 'rcn' and args['print_rules']:
+        # all_pz = torch.cat(all_pz, dim=0)
         selected_antes = [antes[i] for i in all_pz.argmax(-1)]
 
         for i, (a, idx) in enumerate(zip(selected_antes, all_pz.argmax(-1))):
@@ -557,8 +594,6 @@ def main():
                 break
 
     eval_support2(test_classes, all_preds)
-
-    # TODO: save all values 
 
     summary = {
         'encoding_dim': args['encoding_dim'],
