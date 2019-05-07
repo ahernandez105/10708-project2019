@@ -14,19 +14,35 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score
 
 from cen_brl import make_support2_encoder
-from load_data import load_data, Support2, load_support2_all, load_data_new
+from load_data import load_data, Support2
 # from support2 import load_data as sup2_load
 
 class CEN_RCN(nn.Module):
-    def __init__(self, context_encoder, encoding_dim, n_features, n_hidden, mask_u=False):
+    def __init__(self, context_encoder, encoding_dim, n_features, n_hidden, pyz, mask_u=False,
+                pyz_learnable=False):
         super(CEN_RCN, self).__init__()
 
         self.context_encoder = context_encoder
 
         self.fusion = nn.Linear(encoding_dim + n_features, n_hidden)
         self.input_encoder = nn.Linear(n_features, n_hidden)
+        # self.fusion = nn.Sequential(
+        #     nn.Linear(encoding_dim + n_features, n_hidden),
+        #     nn.ReLU(True),
+        #     nn.Linear(n_hidden, n_hidden)
+        # )
+        # self.input_encoder = nn.Sequential(
+        #     nn.Linear(n_features, n_hidden),
+        #     nn.ReLU(True),
+        #     nn.Linear(n_hidden, n_hidden)
+        # )
 
         self.mask_u = mask_u
+
+        # TODO: change pyz to log pyz
+        print(f"pyz_learnable {pyz_learnable}")
+        # self.log_pyz = nn.Parameter(pyz.log(), requires_grad=pyz_learnable)
+        self.pyz = nn.Parameter(pyz, requires_grad=pyz_learnable)
         
     def forward(self, context, x, S):
         # dot-product attention between rule representations and
@@ -42,6 +58,7 @@ class CEN_RCN(nn.Module):
         h = self.fusion(torch.cat([phi, x], dim=-1))
 
         x_rep = self.input_encoder(x)
+        # x_rep = phi
         S_rep = torch.matmul(S.transpose(0, 1), x_rep)
 
         # u: n_train x n_rules
@@ -52,20 +69,30 @@ class CEN_RCN(nn.Module):
             # only allow rules that the datapoint satisfies. We use S to mask
             # assumes that each datapoint satisfies at least one antecedent
 
-            if not S.sum(-1).min() > 0:
-                print("no antecedents satisfy datapoint!")
-                raise ValueError
+            # print(S.sum(-1))
+            # if not S.sum(-1).min() > 0:
+            #     print("no antecedents satisfy datapoint!")
+            #     raise ValueError
 
-            ninf = torch.full_like(u, np.NINF)
-            masked_u = torch.where(S.type(torch.uint8), u, ninf)
-            pz = F.softmax(masked_u, dim=-1)
+            if not S.sum(-1).min() > 0:
+                pz = F.softmax(torch.ones_like(u), dim=-1)
+            else:
+                ninf = torch.full_like(u, np.NINF)
+                masked_u = torch.where(S > 0, u, ninf)
+                pz = F.softmax(masked_u, dim=-1)
+            # pz = F.log_softmax(masked_u, dim=-1)
         
         else:
             pz = F.softmax(u, dim=-1)
+            # pz = F.log_softmax(u, dim=-1)
+
+        # sum_py = self.log_pyz[None, :, :] + pz[:, :, None]
+        # py = sum_py.logsumexp(1)
 
         # TODO: add sequence transition parameters
+        py = torch.matmul(pz, self.pyz)
 
-        return pz
+        return pz, py
 
 class FF(nn.Module):
     def __init__(self, context_encoder, encoding_dim, output_dim):
@@ -92,7 +119,7 @@ def rae(y_true, y_pred):
     diff = expected_death - batch_classes.type_as(expected_death)
     rae = torch.min(torch.tensor(1.), torch.abs(diff / expected_death))
 
-def create_model(args):
+def create_model(args, pyz):
     encoding_dim = args['encoding_dim']
 
     n_features = args['n_features']
@@ -108,7 +135,10 @@ def create_model(args):
     n_hidden = args['n_rcn_hidden']
 
     if args['model'] == 'rcn':
-        model = CEN_RCN(context_encoder, encoding_dim, n_features, n_hidden, mask_u=args['rcn_mask'])
+        model = CEN_RCN(context_encoder, encoding_dim, n_features, n_hidden,
+                        pyz,
+                        mask_u=args['rcn_mask'],
+                        pyz_learnable=args['pyz_learnable'])
     elif args['model'] == 'ff':
         model = FF(context_encoder, encoding_dim, args['n_classes'])
 
@@ -166,8 +196,21 @@ def rae_loss_self(y_true, y_pred):
     nc = pred_time_nc.shape[0]
 
     y_true_nc = y_true[:, :, 1][not_censored]
+
+    # # add event for case where patient is still alive?
+    # # otherwise the time will be 0/1, since all values are 0
+    # y_true_nc = np.concatenate([y_true_nc, np.ones((y_true_nc.shape[0], 1))], axis=-1)
+
     # argmax returns first max index
     true_time_nc = 1 + y_true_nc.argmax(-1).astype('float32')
+
+    # print(y_true_nc.sum(-1).min())
+    # print(y_true_nc[y_true_nc.sum(-1).argmin()])
+    # print(true_time_nc[y_true_nc.sum(-1).argmin()])
+    # print('--')
+    # print(y_true_nc[:5])
+    # print(true_time_nc[:5])
+    # sys.exit()
 
     loss_nc = np.abs(pred_time_nc - true_time_nc) / pred_time_nc
     rae_loss = loss_nc.mean()
@@ -195,6 +238,21 @@ def eval_support2(y_true, y_pred):
 
         print(f"{percentile}th percentile: cutoff {cutoff} - acc {acc_score:.2f}%")
 
+def compute_pyz(n_train, n_classes, n_antes, Y, S, alpha):
+    # build count matrix
+    # counts[y, i]: number of datapoints with label y that satisfy
+    #   antecedent i
+    big_counts = np.zeros((n_train, n_classes, n_antes), dtype=np.uint8)
+    big_counts[np.arange(n_train), Y] = S
+    counts = big_counts.sum(0).astype(np.float)
+
+    assert (n_classes, n_antes) == counts.shape
+    assert np.allclose(counts.sum(0), S.sum(0))
+
+    counts += alpha
+
+    return (counts / counts.sum(0)).transpose()
+
 def evaluate_model(model, dataloader):
     all_preds = []
     for batch_sample in dataloader:
@@ -202,8 +260,8 @@ def evaluate_model(model, dataloader):
         batch_s = batch_sample['S'].to(device)
 
         if args['model'] == 'rcn':
-            pz = model(batch_c, batch_c, batch_s)
-            py = torch.matmul(pz, pyz)
+            pz, py = model(batch_c, batch_c, batch_s)
+            # py = torch.matmul(pz, pyz)
         
         elif args['model'] == 'ff':
             py = model(batch_c)
@@ -244,6 +302,8 @@ def parse_arguments():
     parser.add_argument('--min_support', type=int, default=30)
     parser.add_argument('--max_lhs', type=int, default=3)
     parser.add_argument('--loss', choices=['log_prob', 'rae'], default='log_prob')
+    parser.add_argument('--pyz_learnable', action='store_true')
+    parser.add_argument('--alpha', type=float, default=1.)
 
     return vars(parser.parse_args())
 
@@ -256,7 +316,7 @@ def main():
     """
     args = parse_arguments()
 
-    train_data, valid_data, test_data, antes = load_data_new(args, 'support2')
+    train_data, valid_data, test_data, antes = load_data(args, 'support2')
     for d in [train_data, valid_data, test_data]:
         for k, v in d.items():
             if type(v) is list:
@@ -289,21 +349,12 @@ def main():
     majority_valid = accuracy_score(valid_classes, np.full_like(valid_classes, majority_class))
     print(f"Majority acc on validation: {majority_valid:.4f}")
 
-    # build count matrix
-    # counts[y, i]: number of datapoints with label y that satisfy
-    #   antecedent i
-    big_counts = np.zeros((n_train, n_classes, n_antes), dtype=np.uint8)
-    big_counts[np.arange(n_train), classes] = train_data['S']
-    counts = big_counts.sum(0).astype(np.float)
-
-    assert (n_classes, n_antes) == counts.shape
-    assert np.allclose(counts.sum(0), train_data['S'].sum(0))
-
     # p(y|z): normalized counts of number of classes that satisfy each antecedent
-    pyz = torch.tensor((counts / counts.sum(0)).transpose(), dtype=torch.float).to(device)
+    pyz = compute_pyz(n_train, n_classes, n_antes, classes, train_data['S'], args['alpha'])
+    pyz = torch.tensor(pyz, dtype=torch.float).to(device)
 
     # create model
-    model = create_model(args).to(device)
+    model = create_model(args, pyz).to(device)
 
     print("Params:")
     for n, p in model.named_parameters():
@@ -322,7 +373,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
     
     # optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
     # optimizer = optim.SGD(model.parameters(), lr=1)
 
     start_time = time.time()
@@ -339,18 +390,18 @@ def main():
             
             batch_c = batch_sample['context'].to(device)
             batch_s = batch_sample['S'].to(device)
-            batch_classes = batch_sample['y'].argmax(1)
+            batch_classes = batch_sample['y'].argmax(1).to(device)
             batch_len = len(batch_classes)
 
             optimizer.zero_grad()
 
             if args['model'] == 'rcn':
-                pz = model(batch_c, batch_c, batch_s)
+                pz, py = model(batch_c, batch_c, batch_s)
 
                 # compute p(y | x) = \sum_z p(y|z) p(z|x)
                 # p(z|x) is model output
                 # p(y|z) is precomputed
-                py = torch.matmul(pz, pyz)
+                # py = torch.matmul(pz, pyz)
 
             elif args['model'] == 'ff':
                 py = model(batch_c)
@@ -358,6 +409,7 @@ def main():
             # avoid nan when py = 0
             py = py + 1e-12
             log_prob = py.log()[torch.arange(batch_len), batch_classes].sum()
+            # log_prob = py[torch.arange(batch_len, device=device), batch_classes].sum()
 
             # compute/minimize RAE?
             # also other metrics
@@ -389,8 +441,8 @@ def main():
                     batch_s = batch_sample['S'].to(device)
 
                     if args['model'] == 'rcn':
-                        pz = model(batch_c, batch_c, batch_s)
-                        py = torch.matmul(pz, pyz)
+                        pz, py = model(batch_c, batch_c, batch_s)
+                        # py = torch.matmul(pz, pyz)
                     
                     elif args['model'] == 'ff':
                         py = model(batch_c)
@@ -404,7 +456,7 @@ def main():
             valid_acc = accuracy_score(valid_classes, all_preds)
 
             # RAE
-            expected_death = (np.arange(n_classes) * all_py.numpy()).sum(-1)
+            expected_death = (np.arange(n_classes) * all_py.cpu().numpy()).sum(-1)
             diff = expected_death - valid_classes
             valid_rae = np.minimum(1, np.abs(diff)).mean()
 
@@ -418,7 +470,7 @@ def main():
             print(log_line)
 
             # early stopping
-            if valid_acc > best_val_acc:
+            if valid_acc >= best_val_acc:
                 best_val_acc = valid_acc
                 no_improvement_vals = 0
                 # save best model so far
@@ -452,8 +504,8 @@ def main():
             batch_s = batch_sample['S'].to(device)
 
             if args['model'] == 'rcn':
-                pz = model(batch_c, batch_c, batch_s)
-                py = torch.matmul(pz, pyz)
+                pz, py = model(batch_c, batch_c, batch_s)
+                # py = torch.matmul(pz, pyz)
 
                 all_pz.append(pz)
             
@@ -470,7 +522,7 @@ def main():
 
     test_classes = test_data['y'].argmax(-1)
 
-    print(all_py[:5])
+    # print(all_py[:5])
     print(all_preds[:10])
     print(test_classes[:10])
 
@@ -485,23 +537,24 @@ def main():
     # get Acc@T and RAE metrics on test set
     accs = {}
     for t in [1, 7, 32]:
-        accs[t] = accuracy_score_self(test_data['y2'], all_py.numpy(), t)
+        accs[t] = accuracy_score_self(test_data['y2'], all_py.cpu().numpy(), t)
 
-    expected_death = (np.arange(n_classes) * all_py.numpy()).sum(-1)
+    expected_death = (np.arange(n_classes) * all_py.cpu().numpy()).sum(-1)
     diff = expected_death - test_classes
     test_rae = np.minimum(1, np.abs(diff)).mean()
     print(f"Test RAE: {test_rae:.4f}")
 
-    rae_nc = rae_loss_self(test_data['y2'], all_py.numpy())
+    rae_nc = rae_loss_self(test_data['y2'], all_py.cpu().numpy())
 
-    # if args['model'] == 'rcn':
-    #     all_pz = torch.cat(all_pz, dim=0)
-    #     selected_antes = [antes[i] for i in all_pz.argmax(-1)]
+    if args['model'] == 'rcn':
+        all_pz = torch.cat(all_pz, dim=0)
+        selected_antes = [antes[i] for i in all_pz.argmax(-1)]
 
-    #     for i, (a, idx) in enumerate(zip(selected_antes, all_pz.argmax(-1))):
-    #         print(a, pyz[idx])
-    #         if i > 10:
-    #             break
+        for i, (a, idx) in enumerate(zip(selected_antes, all_pz.argmax(-1))):
+            print(a, pyz[idx])
+            print(pyz[idx, test_classes[i]])
+            if i >= 4:
+                break
 
     eval_support2(test_classes, all_preds)
 

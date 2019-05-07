@@ -123,8 +123,8 @@ class Support2(Dataset):
         self.y = y
         self.context = c.astype('f4')
 
-        # S: n_antes x n
-        print(self.S.shape)
+        # S: n x n_antes
+        self.S = self.S / self.S.sum(0, keepdims=True)
 
     def __len__(self):
         return self.y.shape[0]
@@ -163,7 +163,7 @@ def load_support2_all(args):
         'y2': Y
     }
 
-def load_data_new(args, dataset):
+def load_data(args, dataset):
     if dataset == 'support2':
         data = load_support2_all(args)
 
@@ -234,63 +234,6 @@ def load_data_new(args, dataset):
         }
 
         return train_data, valid_data, test_data, antes
-
-    else:
-        raise NotImplementedError
-
-def load_data(args, dataset):
-    if dataset == 'support2':
-        train_prefix = args['prefix'] + '_train'
-        valid_prefix = args['prefix'] + '_valid'
-        test_prefix = args['prefix'] + '_test'
-
-        train_data = load_support2(args['raw_file'],
-                                    train_prefix + '.tab',
-                                    train_prefix + '.Y',
-                                    'train')
-        valid_data = load_support2(args['raw_file'],
-                                    valid_prefix + '.tab',
-                                    valid_prefix + '.Y',
-                                    'valid')
-        test_data = load_support2(args['raw_file'],
-                                    test_prefix + '.tab',
-                                    test_prefix + '.Y',
-                                    'test')
-
-        # check that all lengths are equal
-        assert len(set(len(x) for x in train_data.values())) == 1
-        assert len(set(len(x) for x in valid_data.values())) == 1
-        assert len(set(len(x) for x in test_data.values())) == 1
-
-        # assert len(train_data[0]) == len(train_data[1]) and len(train_data[1]) == len(train_data[2])
-        # assert len(valid_data[0]) == len(valid_data[1]) and len(valid_data[1]) == len(valid_data[2])
-        # assert len(test_data[0]) == len(test_data[1]) and len(test_data[1]) == len(test_data[2])
-
-        print(f"# train: {len(train_data['x'])}")
-        print(f"# valid: {len(valid_data['x'])}")
-        print(f"# test: {len(test_data['x'])}")
-
-        # further preprocessing: normalize (using only training data)
-        # and split into train, validation and test splits
-        train_norm, valid_norm, test_norm = normalize(train_data['c'], valid_data['c'], test_data['c'])
-
-        train_data['c'] = train_norm
-        valid_data['c'] = valid_norm
-        test_data['c'] = test_norm
-
-        antes = get_freq_itemsets(train_data['x'], train_data['y'], min_support=30, max_lhs=2)
-
-        train_S = build_satisfiability_matrix(train_data['x'], antes)
-        valid_S = build_satisfiability_matrix(valid_data['x'], antes)
-        test_S = build_satisfiability_matrix(test_data['x'], antes)
-        # S, ante_lens, antes = get_freq_itemsets(train_data['x'], train_data['y'], min_support=30)
-
-        train_data['S'] = train_S
-        valid_data['S'] = valid_S
-        test_data['S'] = test_S
-
-        return train_data, valid_data, test_data, antes
-
 
     else:
         raise NotImplementedError
