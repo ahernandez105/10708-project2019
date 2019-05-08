@@ -14,9 +14,10 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score
 
 from cen_brl import make_support2_encoder
-from load_data import load_data, Support2
-# from support2 import load_data as sup2_load
-from models import CEN_RCN, FF
+from load_data.load_data import load_data
+from load_data.support2 import Support2
+from load_data.imdb import IMDB
+from models import CEN_RCN, FF, CEN_RCN_Simple
 from metrics import accuracy_score_self, rae_loss_self
 
 def rae(y_true, y_pred):
@@ -26,26 +27,59 @@ def rae(y_true, y_pred):
     diff = expected_death - batch_classes.type_as(expected_death)
     rae = torch.min(torch.tensor(1.), torch.abs(diff / expected_death))
 
+class IMDBEncoder(nn.Module):
+    def __init__(self, encoder_args):
+        super(IMDBEncoder, self).__init__()
+
+        self.vocab_size = encoder_args['vocab_size']
+        self.n_hidden = encoder_args['n_hidden']
+        self.encoding_dim = encoder_args['encoding_dim']
+
+        print(f"# vocab: {self.vocab_size}")
+
+        self.embedding = nn.Embedding(self.vocab_size, self.n_hidden)
+        self.encoder = nn.LSTM(input_size=self.n_hidden, hidden_size=self.encoding_dim,
+                            batch_first=False)
+
+    def forward(self, x):
+        embeddings = self.embedding(x)
+        out, _ = self.encoder(embeddings)
+
+        # take the last timestep
+        return out[:, -1]
+
 def create_model(args, pyz):
     encoding_dim = args['encoding_dim']
 
-    n_features = args['n_features']
-
     encoder_args = {
-        'n_features': n_features,
         'n_hidden': args['n_encoder_hidden'],
         'encoding_dim': encoding_dim
     }
-    context_encoder = make_support2_encoder(encoder_args)
+    if args['dataset'] == 'support2':
+        n_features = args['n_features']
+        encoder_args['n_features'] = n_features
+        context_encoder = make_support2_encoder(encoder_args)
+    elif args['dataset'] == 'imdb':
+        # encoder_args['vocab_size'] = 88587 + 3 # hardcode for now
+        encoder_args['vocab_size'] = args['vocab_size']
+        context_encoder = IMDBEncoder(encoder_args)
 
     # for now, x = c
     n_hidden = args['n_rcn_hidden']
 
     if args['model'] == 'rcn':
+        n_features = args['n_features']
         model = CEN_RCN(context_encoder, encoding_dim, n_features, n_hidden,
                         pyz,
                         mask_u=args['rcn_mask'],
                         pyz_learnable=args['pyz_learnable'])
+
+    elif args['model'] == 'simple_rcn':
+        model = CEN_RCN_Simple(context_encoder, encoding_dim,
+                            pyz,
+                            mask_u=args['rcn_mask'],
+                            pyz_learnable=args['pyz_learnable'])
+
     elif args['model'] == 'ff':
         model = FF(context_encoder, encoding_dim, args['n_classes'])
 
@@ -118,6 +152,9 @@ def train_model(args, model, dataloader, valid_dataloader=None):
                 # p(y|z) is precomputed
                 # py = torch.matmul(pz, pyz)
 
+            elif args['model'] == 'simple_rcn':
+                pz, py = model(batch_c, batch_s)
+
             elif args['model'] == 'ff':
                 py = model(batch_c)
 
@@ -144,7 +181,7 @@ def train_model(args, model, dataloader, valid_dataloader=None):
 
             optimizer.step()
 
-        if ep % 10 == 0 and valid_dataloader is not None:
+        if ep % 5 == 0 and valid_dataloader is not None:
             # validation
 
             all_preds = []
@@ -158,6 +195,9 @@ def train_model(args, model, dataloader, valid_dataloader=None):
                     if args['model'] == 'rcn':
                         pz, py = model(batch_c, batch_c, batch_s)
                         # py = torch.matmul(pz, pyz)
+
+                    elif args['model'] == 'simple_rcn':
+                        pz, py = model(batch_c, batch_s)
                     
                     elif args['model'] == 'ff':
                         py = model(batch_c)
@@ -170,20 +210,23 @@ def train_model(args, model, dataloader, valid_dataloader=None):
             all_preds = torch.cat(all_preds)
             all_py = torch.cat(all_py)
             valid_y = np.concatenate(valid_y).argmax(-1)
-            valid_acc = accuracy_score(valid_y, all_preds.numpy())
-
-            # RAE
-            n_classes = all_py.size()[-1]
-            expected_death = (np.arange(n_classes) * all_py.cpu().numpy()).sum(-1)
-            diff = expected_death - valid_y
-            valid_rae = np.minimum(1, np.abs(diff)).mean()
+            valid_acc = accuracy_score(valid_y, all_preds.cpu().numpy())
 
             print(all_preds[:10])
             print(valid_y[:10])
-            print(diff[:10])
+            # print(diff[:10])
 
             log_line = f"Ep {ep:<5} -  log prob: {total_log_prob:.4f}, validation acc: {valid_acc:.4f}"
-            log_line += f", validation RAE: {valid_rae:.4f}"
+
+            # RAE
+            if args['dataset'] == 'support2':
+                n_classes = all_py.size()[-1]
+                expected_death = (np.arange(n_classes) * all_py.cpu().numpy()).sum(-1)
+                diff = expected_death - valid_y
+                valid_rae = np.minimum(1, np.abs(diff)).mean()
+
+                log_line += f", validation RAE: {valid_rae:.4f}"
+
             log_line += "\t({:.3f}s)".format(time.time() - start_time)
             print(log_line)
 
@@ -229,6 +272,11 @@ def pred_model(args, model, dataloader):
             if args['model'] == 'rcn':
                 pz, py = model(batch_c, batch_c, batch_s)
                 # py = torch.matmul(pz, pyz)
+
+                all_pz.append(pz)
+
+            elif args['model'] == 'simple_rcn':
+                pz, py = model(batch_c, batch_s)
 
                 all_pz.append(pz)
             
@@ -305,10 +353,16 @@ def write_results(results, outfile):
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument('model', choices=['rcn', 'ff'])
-    parser.add_argument('raw_file')
-    parser.add_argument('categorical_file')
-    parser.add_argument('label_file')
+    parser.add_argument('model', choices=['rcn', 'ff', 'simple_rcn'])
+    parser.add_argument('dataset', choices=['support2', 'imdb'])
+
+    # support2 args
+    parser.add_argument('--raw_file')
+    parser.add_argument('--categorical_file')
+    parser.add_argument('--label_file')
+
+    # imdb args
+    parser.add_argument('--vocab_file')
 
     parser.add_argument('--cuda', action='store_true')
 
@@ -332,8 +386,19 @@ def parse_arguments():
     parser.add_argument('--loss', choices=['log_prob', 'rae'], default='log_prob')
     parser.add_argument('--pyz_learnable', action='store_true')
     parser.add_argument('--alpha', type=float, default=1.)
+    parser.add_argument('--max_vocab', type=int)
 
-    return vars(parser.parse_args())
+    args = vars(parser.parse_args())
+
+    if args['dataset'] == 'support2':
+        assert args['raw_file'] is not None
+        assert args['categorical_file'] is not None
+        assert args['label_file'] is not None
+    elif args['dataset'] == 'imdb':
+        assert args['raw_file'] is not None
+        assert args['vocab_file'] is not None
+
+    return args
 
 def main():
     """
@@ -343,7 +408,19 @@ def main():
     """
     args = parse_arguments()
 
-    train_data, valid_data, test_data, antes = load_data(args, 'support2')
+    # train_data, valid_data, test_data, antes = load_data(args, args['dataset'])
+    data = load_data(args, args['dataset'])
+
+    train_data = data['train_data']
+    valid_data = data['valid_data']
+    test_data = data['test_data']
+    antes = data['antes']
+
+    if args['dataset'] == 'support2':
+        args['n_features'] = train_data['c'].shape[-1]
+    elif args['dataset'] == 'imdb':
+        args['vocab_size'] = data['vocab_size']
+
     for d in [train_data, valid_data, test_data]:
         for k, v in d.items():
             if type(v) is list:
@@ -354,8 +431,6 @@ def main():
         print('---')
 
     print(train_data['c'].shape)
-
-    args['n_features'] = train_data['c'].shape[-1]
 
     if args['cuda']:
         device = torch.device('cuda')
@@ -391,14 +466,25 @@ def main():
 
     batch_size = args['batch_size']
 
-    train_dataset = Support2(train_data['x'], train_data['c'], train_data['y'], train_data['S'])
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+    if args['dataset'] == 'support2':
+        train_dataset = Support2(train_data['x'], train_data['c'], train_data['y'], train_data['S'])
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 
-    valid_dataset = Support2(valid_data['x'], valid_data['c'], valid_data['y'], valid_data['S'])
-    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+        valid_dataset = Support2(valid_data['x'], valid_data['c'], valid_data['y'], valid_data['S'])
+        valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
-    test_dataset = Support2(test_data['x'], test_data['c'], test_data['y'], test_data['S'])
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+        test_dataset = Support2(test_data['x'], test_data['c'], test_data['y'], test_data['S'])
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+    
+    elif args['dataset'] == 'imdb':
+        train_dataset = IMDB(train_data['x'], train_data['c'], train_data['y'], train_data['S'])
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+
+        valid_dataset = IMDB(valid_data['x'], valid_data['c'], valid_data['y'], valid_data['S'])
+        valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+
+        test_dataset = IMDB(test_data['x'], test_data['c'], test_data['y'], test_data['S'])
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     model = train_model(args,
                         model,
@@ -406,16 +492,18 @@ def main():
                         valid_dataloader=valid_loader)
 
     all_preds, all_py, all_pz = pred_model(args, model, test_loader)
+    print(all_preds[:5])
 
-    accs, test_rae, rae_nc = compute_support2_metrics(args,
-                                                    all_preds,
-                                                    all_py,
-                                                    test_data['y'],
-                                                    test_data['y2'])
+    if args['dataset'] == 'support2':
+        accs, test_rae, rae_nc = compute_support2_metrics(args,
+                                                        all_preds,
+                                                        all_py,
+                                                        test_data['y'],
+                                                        test_data['y2'])
 
     test_classes = test_data['y'].argmax(-1)
 
-    if args['model'] == 'rcn' and args['print_rules']:
+    if args['model'] in ['rcn', 'simple_rcn'] and args['print_rules']:
         # all_pz = torch.cat(all_pz, dim=0)
         selected_antes = [antes[i] for i in all_pz.argmax(-1)]
 
@@ -425,35 +513,40 @@ def main():
             if i >= 4:
                 break
 
-    eval_support2(test_classes, all_preds)
+    if args['dataset'] == 'support2':
+        eval_support2(test_classes, all_preds)
 
-    summary = {
-        'encoding_dim': args['encoding_dim'],
-        'n_encoder_hidden': args['n_encoder_hidden'],
-        'n_rcn_hidden': args['n_rcn_hidden'],
-        'min_support': args['min_support'],
-        'max_lhs': args['max_lhs'],
-        'n_antes': n_antes,
-        'rae': rae_nc,
-    }
-    for t, acc in accs.items():
-        summary[f'Acc@{t}'] = acc
-    
-    headers = [
-        'encoding_dim',
-        'n_encoder_hidden',
-        'n_rcn_hidden',
-        'min_support',
-        'max_lhs',
-        'n_antes',
-        'rae',
-        'Acc@1',
-        'Acc@7',
-        'Acc@32'
-    ]
+        summary = {
+            'encoding_dim': args['encoding_dim'],
+            'n_encoder_hidden': args['n_encoder_hidden'],
+            'n_rcn_hidden': args['n_rcn_hidden'],
+            'min_support': args['min_support'],
+            'max_lhs': args['max_lhs'],
+            'n_antes': n_antes,
+            'rae': rae_nc,
+        }
+        for t, acc in accs.items():
+            summary[f'Acc@{t}'] = acc
+        
+        headers = [
+            'encoding_dim',
+            'n_encoder_hidden',
+            'n_rcn_hidden',
+            'min_support',
+            'max_lhs',
+            'n_antes',
+            'rae',
+            'Acc@1',
+            'Acc@7',
+            'Acc@32'
+        ]
 
-    line = ','.join([str(summary[h]) for h in headers])
-    print(line)
+        line = ','.join([str(summary[h]) for h in headers])
+        print(line)
+
+    elif args['dataset'] == 'imdb':
+        acc_score = accuracy_score(test_classes, all_preds)
+        print(f"Accuracy on test: {acc_score:.7f}")
 
     if args['outfile']:
         with open(args['outfile'], 'a') as f:

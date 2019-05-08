@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 from fim import fpgrowth
 
@@ -73,7 +75,7 @@ def build_satisfiability_matrix(data, antes, prefix=None):
     antes = [set(lhs) for lhs in antes]
     n_antes = len(antes)
 
-    # print(f"# antes: {n_antes}")
+    print(f"# antes: {n_antes}")
 
     if prefix:
         prefix = [set(antes[lhs]) for lhs in prefix]
@@ -91,7 +93,7 @@ def build_satisfiability_matrix(data, antes, prefix=None):
         prefix_satisfied = np.zeros((len(data),), dtype=np.bool)
 
     # S = np.zeros((len(data), n_antes), dtype='f4')
-    S = np.zeros((len(data), n_antes), dtype=bool)
+    S = np.zeros((len(data), n_antes), dtype=np.bool)
 
     # True: 1, False: 0
     # S[0] = np.logical_not(prefix_satisfied).astype(np.float)
@@ -105,5 +107,11 @@ def build_satisfiability_matrix(data, antes, prefix=None):
                 continue
                 
             S[i, j] = lhs.issubset(xi)
+
+        if j % 5 == 0:
+            print(j, end='..')
+            sys.stdout.flush()
+
+    print(S.shape)
 
     return S
