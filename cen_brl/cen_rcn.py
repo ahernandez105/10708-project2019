@@ -362,15 +362,15 @@ def compute_support2_metrics(args, y_pred, y_probs, y_true, y_true_full):
     # get Acc@T and RAE metrics on test set
     accs = {}
     for t in [1, 7, 32]:
-        accs[t] = accuracy_score_self(y_true_full, y_probs.cpu().numpy(), t)
+        accs[t] = accuracy_score_self(y_true_full, y_probs, t)
 
     n_classes = y_probs.shape[-1]
-    expected_death = (np.arange(n_classes) * y_probs.cpu().numpy()).sum(-1)
+    expected_death = (np.arange(n_classes) * y_probs).sum(-1)
     diff = expected_death - test_classes
     test_rae = np.minimum(1, np.abs(diff)).mean()
     print(f"Test RAE: {test_rae:.4f}")
 
-    rae_nc = rae_loss_self(y_true_full, y_probs.cpu().numpy())
+    rae_nc = rae_loss_self(y_true_full, y_probs)
 
     return accs, test_rae, rae_nc
 
@@ -523,6 +523,10 @@ def main():
 
     all_preds, all_py, all_pz = pred_model(args, model, test_loader)
     print(all_preds[:5])
+
+    all_preds = all_preds.cpu().numpy()
+    all_py = all_py.cpu().numpy()
+    all_pz = all_pz.cpu().numpy()
 
     if args['dataset'] == 'support2':
         accs, test_rae, rae_nc = compute_support2_metrics(args,
