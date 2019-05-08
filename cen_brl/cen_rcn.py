@@ -152,9 +152,13 @@ def train_model(args, model, dataloader, valid_dataloader=None):
     device = args['device']
 
     # build optimizers
-    # optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
-    optimizer = optim.Adam(model.parameters(), lr=0.0001)
-    # optimizer = optim.SGD(model.parameters(), lr=1)
+
+    if args['optim'] == 'sgd':
+        optimizer = optim.SGD(model.parameters(), lr=args['lr'])
+    elif args['optim'] == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=args['lr'])
+    else:
+        raise NotImplementedError
 
     # early stopping metrics
     best_val_acc = 0.
@@ -414,6 +418,9 @@ def parse_arguments():
     parser.add_argument('--pyz_learnable', action='store_true')
     parser.add_argument('--alpha', type=float, default=1.)
     parser.add_argument('--max_vocab', type=int)
+
+    parser.add_argument('--optim', choices=['adam', 'sgd'], default='adam')
+    parser.add_argument('--lr', type=float, default=0.001)
 
     args = vars(parser.parse_args())
 
