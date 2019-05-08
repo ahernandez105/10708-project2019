@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 # from support2_mod import load_data as load_sup
 from .support2 import load_support2
 from .imdb import load_imdb
+from .mnist import load_mnist
 
 def normalize(train, valid, test):
     """
@@ -41,6 +42,9 @@ def load_data(args, dataset):
 
     elif dataset == 'imdb':
         return load_imdb(args)
+
+    elif dataset == 'mnist':
+        return load_mnist(args)
 
     else:
         raise NotImplementedError

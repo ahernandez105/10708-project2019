@@ -17,6 +17,7 @@ from cen_brl import make_support2_encoder
 from load_data.load_data import load_data
 from load_data.support2 import Support2
 from load_data.imdb import IMDB
+from load_data.mnist import MNIST
 from models import CEN_RCN, FF, CEN_RCN_Simple
 from metrics import accuracy_score_self, rae_loss_self
 
@@ -48,6 +49,29 @@ class IMDBEncoder(nn.Module):
         # take the last timestep
         return out[:, -1]
 
+class ImageEncoder(nn.Module):
+    def __init__(self, encoder_args):
+        super(ImageEncoder, self).__init__()
+
+        self.n_channels = encoder_args['n_channels']
+        self.encoding_dim = encoder_args['encoding_dim']
+
+        self.encoder = nn.Sequential(
+            nn.Conv2d(self.n_channels, 1, kernel_size=3),
+            nn.MaxPool2d(2),
+            nn.ReLU(True),
+            nn.Conv2d(1, 1, kernel_size=3),
+            nn.MaxPool2d(2),
+            nn.ReLU(True)
+        )
+        self.final = nn.Linear(None, self.encoding_dim) # ??
+
+    def forward(self, x):
+        h = self.encoder(x)
+
+        # flatten
+        return self.final(h.flatten(start_dim=1, end_dim=-1))
+
 def create_model(args, pyz):
     encoding_dim = args['encoding_dim']
 
@@ -63,6 +87,9 @@ def create_model(args, pyz):
         # encoder_args['vocab_size'] = 88587 + 3 # hardcode for now
         encoder_args['vocab_size'] = args['vocab_size']
         context_encoder = IMDBEncoder(encoder_args)
+    elif args['dataset'] == 'mnist':
+        encoder_args['n_channels'] = 1
+        context_encoder = ImageEncoder(encoder_args)
 
     # for now, x = c
     n_hidden = args['n_rcn_hidden']
@@ -354,7 +381,7 @@ def write_results(results, outfile):
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('model', choices=['rcn', 'ff', 'simple_rcn'])
-    parser.add_argument('dataset', choices=['support2', 'imdb'])
+    parser.add_argument('dataset', choices=['support2', 'imdb', 'mnist'])
 
     # support2 args
     parser.add_argument('--raw_file')
@@ -397,6 +424,8 @@ def parse_arguments():
     elif args['dataset'] == 'imdb':
         assert args['raw_file'] is not None
         assert args['vocab_file'] is not None
+    elif args['dataset'] == 'mnist':
+        assert args['raw_file'] is not None
 
     return args
 
@@ -467,24 +496,25 @@ def main():
     batch_size = args['batch_size']
 
     if args['dataset'] == 'support2':
-        train_dataset = Support2(train_data['x'], train_data['c'], train_data['y'], train_data['S'])
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
-
-        valid_dataset = Support2(valid_data['x'], valid_data['c'], valid_data['y'], valid_data['S'])
-        valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
-
-        test_dataset = Support2(test_data['x'], test_data['c'], test_data['y'], test_data['S'])
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+        dataset_class = Support2
     
     elif args['dataset'] == 'imdb':
-        train_dataset = IMDB(train_data['x'], train_data['c'], train_data['y'], train_data['S'])
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+        dataset_class = IMDB
 
-        valid_dataset = IMDB(valid_data['x'], valid_data['c'], valid_data['y'], valid_data['S'])
-        valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+    elif args['dataset'] == 'mnist':
+        dataset_class = MNIST
 
-        test_dataset = IMDB(test_data['x'], test_data['c'], test_data['y'], test_data['S'])
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+    else:
+        raise NotImplementedError
+
+    train_dataset = dataset_class(train_data['x'], train_data['c'], train_data['y'], train_data['S'])
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+
+    valid_dataset = dataset_class(valid_data['x'], valid_data['c'], valid_data['y'], valid_data['S'])
+    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+
+    test_dataset = dataset_class(test_data['x'], test_data['c'], test_data['y'], test_data['S'])
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     model = train_model(args,
                         model,
@@ -547,6 +577,13 @@ def main():
     elif args['dataset'] == 'imdb':
         acc_score = accuracy_score(test_classes, all_preds)
         print(f"Accuracy on test: {acc_score:.7f}")
+
+    elif args['dataset'] == 'mnist':
+        acc_score = accuracy_score(test_classes, all_preds)
+        print(f"Accuracy on test: {acc_score:.7f}")
+
+    else:
+        raise NotImplementedError
 
     if args['outfile']:
         with open(args['outfile'], 'a') as f:
