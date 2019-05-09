@@ -215,10 +215,6 @@ def load_mnist(args):
     (x_train, y_train), (x_test, y_test) = load_mnist_init(args)
 
     # load interpretable features
-    # train_features = load_interp_features(datapath=)
-    # # get interpretable features: 4x4 superpixels?
-    # train_features = get_interpretable_features(x_train)
-    # test_features = get_interpretable_features(x_test)
     train_features, test_features = get_interpretable_features(args)
 
     # split into train and validation
@@ -282,8 +278,6 @@ def load_mnist(args):
 
 if __name__ == '__main__':
     mnist_file = sys.argv[1]
-
-    # (x_train, _), (x_test, _) = load_mnist_init({'raw_file': mnist_file})
 
     f = np.load(mnist_file)
     x_train = f['x_train']

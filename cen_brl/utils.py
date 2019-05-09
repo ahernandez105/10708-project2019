@@ -72,6 +72,7 @@ def build_satisfiability_matrix(data, antes, prefix=None):
     prefix: list of indices of previous antecedents in current decision list
     """
 
+    data = [set(xi) for xi in data]
     antes = [set(lhs) for lhs in antes]
     n_antes = len(antes)
 
