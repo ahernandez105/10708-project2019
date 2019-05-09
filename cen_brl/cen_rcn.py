@@ -61,10 +61,12 @@ class ImageEncoder(nn.Module):
             nn.MaxPool2d(2),
             nn.ReLU(True),
             nn.Conv2d(1, 1, kernel_size=3),
-            nn.MaxPool2d(2),
+            nn.MaxPool2d(2, padding=1),
             nn.ReLU(True)
         )
-        self.final = nn.Linear(None, self.encoding_dim) # ??
+
+        # final is 6x6
+        self.final = nn.Linear(6 * 6, self.encoding_dim)
 
     def forward(self, x):
         h = self.encoder(x)
@@ -395,6 +397,10 @@ def parse_arguments():
     # imdb args
     parser.add_argument('--vocab_file')
 
+    # mnist args
+    parser.add_argument('--interp_file')
+    parser.add_argument('--interp_type', choices=['pixels16x16'])
+
     parser.add_argument('--cuda', action='store_true')
 
     parser.add_argument('--csv')
@@ -433,6 +439,7 @@ def parse_arguments():
         assert args['vocab_file'] is not None
     elif args['dataset'] == 'mnist':
         assert args['raw_file'] is not None
+        assert args['interp_file'] is not None
 
     return args
 
