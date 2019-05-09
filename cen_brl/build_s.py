@@ -13,8 +13,6 @@ def get_row(lhs, data):
     return [lhs.issubset(xi) for xi in data]
 
 def build_sat_parallel(data, antes):
-    antes = [set(x) for x in antes]
-    data = [set(x) for x in data]
     # itertools.product(antes, [data])
     with multiprocessing.Pool(4) as pool:
         S = pool.starmap(get_row, itertools.product(antes, [data]))
@@ -23,10 +21,35 @@ def build_sat_parallel(data, antes):
     print(S.shape)
     return S
 
+def build_sat_quick(z, antes):
+    n_antes = len(antes)
+    n_points = len(z)
+
+    S = np.full((n_antes, n_points), True, dtype=np.bool)
+
+    a1 = (z >= 0.5)
+    a2 = (z < 0.5)
+
+    for i, ante in enumerate(antes):
+        for clause in ante:
+            x, y, sign, _ = clause.split()
+            x = int(x[1:-1])
+            y = int(y[:-1])
+
+            if sign == '>=':
+                S[i] = np.logical_and(S[i], a1[:, x, y])
+            else:
+                S[i] = np.logical_and(S[i], a2[:, x, y])
+
+        if i % 1000 == 0:
+            print(i, end='..')
+
+    return S.transpose()
+
 if __name__ == '__main__':
     (x_train, y_train), (x_test, y_test) = load_mnist_init({'raw_file': sys.argv[1]})
 
-    train_features, test_features = get_interpretable_features({
+    (train_features, test_features), (z_train, z_test) = get_interpretable_features({
         'interp_file': sys.argv[2],
         'interp_type': sys.argv[3]
     })
@@ -36,25 +59,9 @@ if __name__ == '__main__':
 
     antes = get_freq_itemsets(train_features, y_train, min_support=min_support, max_lhs=max_lhs)
 
-    # count number of features that appear in all
-    antes_mapping = {
-        i: a for i, a in enumerate(antes)
-    }
-    print(antes_mapping[0])
-    print(antes_mapping[1])
-    print(len(antes))
-
-    st = time.time()
-    S_train = build_sat_parallel(train_features, antes)
-    # S_train = build_satisfiability_matrix(train_features, antes)
-    print(time.time() - st)
-    print(S_train.shape)
-
-    print(S_train.sum(0).max())
-    print(S_train.sum(0).min())
-    print(np.percentile(S_train.sum(0), [10, 30, 50, 70, 90]))
-
-    # S_test = build_satisfiability_matrix(test_features, antes)
-
+    S_train = build_sat_quick(z_train, antes)
+    print()
+    S_test = build_sat_quick(z_test, antes)
+    
     # save matrices
-    # np.savez(sys.argv[6], S_train=S_train, S_test=S_test)
+    np.savez(sys.argv[6], S_train=S_train, S_test=S_test)
