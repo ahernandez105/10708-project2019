@@ -61,7 +61,7 @@ def get_interpretable_features(args):
     z_train, z_test = load_interp_features(datapath=args['interp_file'],
                                            feature_type=args['interp_type'],
                                            remove_const_features=False,
-                                           standardize=True,
+                                           standardize=False,
                                            whiten=False,
                                            permute=False)
 
@@ -77,7 +77,7 @@ def get_interpretable_features(args):
         for z in (z_test >= 0.5)
     ]
 
-    return c_train, c_test
+    return (c_train, c_test), (z_train, z_test)
 
 def load_interp_features(datapath=None,
                          feature_type='pixels16x16',
@@ -215,7 +215,7 @@ def load_mnist(args):
     (x_train, y_train), (x_test, y_test) = load_mnist_init(args)
 
     # load interpretable features
-    train_features, test_features = get_interpretable_features(args)
+    (train_features, test_features), _ = get_interpretable_features(args)
 
     # split into train and validation
     N_TRAIN = 50000
@@ -283,7 +283,7 @@ if __name__ == '__main__':
     x_train = f['x_train']
     x_test = f['x_test']
 
-    uint_feat = get_interpretable_features(x_train)
-    float_feat = get_interpretable_features(x_train.astype('float32') / 255)
+    # uint_feat = get_interpretable_features(x_train)
+    # float_feat = get_interpretable_features(x_train.astype('float32') / 255)
 
     print(np.allclose(uint_feat, float_feat))
