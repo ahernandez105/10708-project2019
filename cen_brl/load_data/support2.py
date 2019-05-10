@@ -81,6 +81,7 @@ def make_antecedents(X, feat_names, orig_values, ignore_missing=True):
         for feat, i in idx_mapping.items():
             if ignore_missing and np.isnan(o_row[i]):
                 # ignore missing values
+                # print('ignore')
                 continue
 
             if feat in categorical:
@@ -88,21 +89,39 @@ def make_antecedents(X, feat_names, orig_values, ignore_missing=True):
                     row_feats.append(feat)
             
             else:
-                p25, p50, p75 = percentiles[feat]
-                bool_25 = (row[i] < p25)
-                bool_50 = (row[i] < p50)
-                bool_75 = (row[i] < p75)
-                # bool_25 = (X[:, i] < p25)
-                # bool_50 = (X[:, i] < p50)
-                # bool_75 = (X[:, i] < p75)
+                # p25, p50, p75 = percentiles[feat]
 
-                for cond, val in [(bool_25, p25), (bool_50, p50), (bool_75, p75)]:
-                    if val == 0:
+                done = False
+                for i, p in enumerate(percentiles[feat]):
+                    if p == 0:
                         continue
-                    if cond:
-                        row_feats.append(f"{feat}<{val:.3f}")
-                    else:
-                        row_feats.append(f"{feat}>={val:.3f}")
+
+                    if row[i] < p:
+                        done = True
+                        if i == 0:
+                            row_feats.append(f"{feat}<{p:.3f}")
+                        else:
+                            below = percentiles[feat][i-1]
+                            row_feats.append(f"{below:.3f}<={feat}<{p:.3f}")
+
+                if not done:
+                    assert row[i] >= percentiles[feat][-1]
+                    row_feats.append(f"{feat}>={percentiles[feat][-1]:.3f}")
+                            
+                # bool_25 = (row[i] < p25)
+                # bool_50 = (row[i] < p50)
+                # bool_75 = (row[i] < p75)
+                # # bool_25 = (X[:, i] < p25)
+                # # bool_50 = (X[:, i] < p50)
+                # # bool_75 = (X[:, i] < p75)
+
+                # for cond, val in [(bool_25, p25), (bool_50, p50), (bool_75, p75)]:
+                #     if val == 0:
+                #         continue
+                #     if cond:
+                #         row_feats.append(f"{feat}<{val:.3f}")
+                #     else:
+                #         row_feats.append(f"{feat}>={val:.3f}")
 
         features.append(list(set(row_feats)))
 
