@@ -144,14 +144,18 @@ def load_support2(args):
     Y = data['y']
     Y_extra = data['y2']
 
-    # random split
     N_TRAIN = 7105
     N_VALID = 1000
     N_TEST = 1000
 
-    seed = args['seed']
-    rng = np.random.RandomState(seed)
-    order = rng.permutation(len(X))
+    if args['order']:
+        order = np.load(args['order'])
+    else:
+        # random split
+        print("random split...")
+        seed = args['seed']
+        rng = np.random.RandomState(seed)
+        order = rng.permutation(len(X))
 
     X = [X[i] for i in order]
     Y = Y[order]

@@ -418,6 +418,7 @@ def parse_arguments():
     parser.add_argument('--print_rules', action='store_true')
     parser.add_argument('--save_rules')
     parser.add_argument('--outfile')
+    parser.add_argument('--order')
 
     # model hyperparameters
     parser.add_argument('--encoding_dim', type=int, default=150)
@@ -574,21 +575,39 @@ def main():
         # all_pz = torch.cat(all_pz, dim=0)
         predictions = {}
 
-        _, _, train_pz = pred_model(args, model, train_loader)
-        _, _, valid_pz = pred_model(args, model, valid_loader)
-        _, _, test_pz = pred_model(args, model, test_loader)
+        train_pred, _, train_pz = pred_model(args, model, train_loader)
+        valid_pred, _, valid_pz = pred_model(args, model, valid_loader)
+        test_pred, _, test_pz = pred_model(args, model, test_loader)
 
+        preds = torch.cat([train_pred, valid_pred, test_pred]).cpu().numpy()
         all_pz = torch.cat([train_pz, valid_pz, test_pz])
+
+        train_classes = train_data['y'].argmax(-1)
+        valid_classes = valid_data['y'].argmax(-1)
+        test_classes = test_data['y'].argmax(-1)
+        classes = np.concatenate([train_classes, valid_classes, test_classes])
 
         selected_antes = [antes[i] for i in all_pz.argmax(-1)]
 
-        for i, (a, idx) in enumerate(zip(selected_antes, all_pz.argmax(-1))):
+        # for i, (a, idx) in enumerate(zip(selected_antes, all_pz.argmax(-1))):
+        for i, (a, idx, y_t, y_p) in enumerate(zip(selected_antes,
+                                                   all_pz.argmax(-1),
+                                                   classes,
+                                                   preds)):
             # print(a, pyz[idx])
             # print(pyz[idx, test_classes[i]])
+            
+            # determine accuracy at each timestep
+            acc = [
+                1 if (i >= y_t and i >= y_p or i < y_t and i < y_p) else 0
+                for i in range(n_classes)
+            ]
 
             predictions[int(order[i])] = {
+            # predictions[i] = {
                 'antecedent': a,
-                'p(y|z)': pyz[idx].cpu().numpy().tolist()
+                'p(y|z)': pyz[idx].cpu().numpy().tolist(),
+                'acc': acc
             }
 
         json.dump(predictions, open(args['save_rules'], 'w'))
