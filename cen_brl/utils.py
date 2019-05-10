@@ -109,7 +109,7 @@ def build_satisfiability_matrix(data, antes, prefix=None):
                 
             S[i, j] = lhs.issubset(xi)
 
-        if j % 20 == 0:
+        if j % 100 == 0:
             print(j, end='..')
             sys.stdout.flush()
 
