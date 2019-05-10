@@ -393,13 +393,17 @@ def parse_arguments():
     parser.add_argument('--raw_file')
     parser.add_argument('--categorical_file')
     parser.add_argument('--label_file')
+    parser.add_argument('--use_missing', action='store_true')
 
     # imdb args
     parser.add_argument('--vocab_file')
 
     # mnist args
     parser.add_argument('--interp_file')
-    parser.add_argument('--interp_type', choices=['pixels16x16'])
+    parser.add_argument('--interp_type',
+                        choices=['pixels16x16', 'pixels7x7'],
+                        default='pixels7x7'
+                        )
 
     parser.add_argument('--cuda', action='store_true')
 
@@ -432,7 +436,7 @@ def parse_arguments():
 
     if args['dataset'] == 'support2':
         assert args['raw_file'] is not None
-        assert args['categorical_file'] is not None
+        # assert args['categorical_file'] is not None
         assert args['label_file'] is not None
     elif args['dataset'] == 'imdb':
         assert args['raw_file'] is not None

@@ -78,18 +78,21 @@ def load_data(datapath=None,
     features = pd.get_dummies(features, dummy_na=False, columns=cat_columns)
 
     # Scale and impute real-valued features
+    features_orig = features.copy(deep=True)
+    # impute before scaling!!
+    if fill_na == 'avg':
+        for key, val in six.iteritems(AVG_VALUES):
+            features[[key]] = features[[key]].fillna(val)
+
     features[['num.co', 'slos', 'hday']] = \
         features[['num.co', 'slos', 'hday']].astype(np.float)
     float_cols = features.columns[features.dtypes == np.float]
     features[float_cols] = \
         (features[float_cols] - features[float_cols].min()) / \
         (features[float_cols].max() - features[float_cols].min())
-    if fill_na == 'avg':
-        for key, val in six.iteritems(AVG_VALUES):
-            features[[key]] = features[[key]].fillna(val)
     features.fillna(na_value, inplace=True)
     X = features.values
-    X[:, 33] = np.random.rand(X.shape[0])
+    # X[:, 33] = np.random.rand(X.shape[0])
 
     # Preprocess targets
     T = targets.values
@@ -115,7 +118,7 @@ def load_data(datapath=None,
     if split:
         return split_data(X, Y, seed=seed)
     else:
-        return X, Y
+        return X, Y, features.columns, features_orig.values
 
 def split_data(X, Y, seed=42):
     # Shuffle & split the data into sets

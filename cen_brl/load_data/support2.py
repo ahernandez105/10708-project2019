@@ -49,16 +49,79 @@ class Support2(Dataset):
             'y': self.y[idx]
         }
 
+def make_antecedents(X, feat_names, orig_values, ignore_missing=True):
+    categorical = set([
+       'sex_female', 'sex_male', 'income_$11-$25k', 'income_$25-$50k',
+       'income_>$50k', 'income_under $11k', 'sfdm2_<2 mo. follow-up',
+       'sfdm2_Coma or Intub', 'sfdm2_SIP>=30', 'sfdm2_adl>=4 (>=5 if sur)',
+       'sfdm2_no(M2 and SIP pres)', 'ca_metastatic', 'ca_no', 'ca_yes',
+       'dzgroup_ARF/MOSF w/Sepsis', 'dzgroup_CHF', 'dzgroup_COPD',
+       'dzgroup_Cirrhosis', 'dzgroup_Colon Cancer', 'dzgroup_Coma',
+       'dzgroup_Lung Cancer', 'dzgroup_MOSF w/Malig', 'race_asian',
+       'race_black', 'race_hispanic', 'race_other', 'race_white',
+       'dementia', 'diabetes'
+    ])
+    real_feats = set(feat_names).difference(categorical)
+
+    idx_mapping = {
+        feat: i for i, feat in enumerate(feat_names)
+    }
+
+    # compute percentiles (for now just on whole dataset, not just train)
+    percentiles = {}
+    for feat in real_feats:
+        vals = np.percentile(X[:, idx_mapping[feat]], [25, 50, 75])
+        percentiles[feat] = vals
+
+    features = []
+
+    assert X.shape == orig_values.shape
+    for row, o_row in zip(X, orig_values):
+        row_feats = []
+        for feat, i in idx_mapping.items():
+            if ignore_missing and np.isnan(o_row[i]):
+                # ignore missing values
+                continue
+
+            if feat in categorical:
+                if row[i] > 0:
+                    row_feats.append(feat)
+            
+            else:
+                p25, p50, p75 = percentiles[feat]
+                bool_25 = (row[i] < p25)
+                bool_50 = (row[i] < p50)
+                bool_75 = (row[i] < p75)
+                # bool_25 = (X[:, i] < p25)
+                # bool_50 = (X[:, i] < p50)
+                # bool_75 = (X[:, i] < p75)
+
+                for cond, val in [(bool_25, p25), (bool_50, p50), (bool_75, p75)]:
+                    if val == 0:
+                        continue
+                    if cond:
+                        row_feats.append(f"{feat}<{val:.3f}")
+                    else:
+                        row_feats.append(f"{feat}>={val:.3f}")
+
+        features.append(list(set(row_feats)))
+
+    return features
+
 def load_support2_all(args):
     # load c (already scaled!)
-    X, Y = load_sup(args['raw_file'], split=False)
+    X, Y, feat_names, orig_values = load_sup(args['raw_file'], split=False)
 
-    # load x
-    cat_file = args['categorical_file']
-    cat_data = []
-    with open(cat_file, 'r') as f:
-        for line in f:
-            cat_data.append(line.strip().split())
+    # convert C to antecedents (x)
+    if args['categorical_file']:
+        # load (old) x
+        cat_file = args['categorical_file']
+        cat_data = []
+        with open(cat_file, 'r') as f:
+            for line in f:
+                cat_data.append(line.strip().split())
+    else:
+        cat_data = make_antecedents(X, feat_names, orig_values, ignore_missing=(not args['use_missing']))
 
     # load y
     y_file = args['label_file']
