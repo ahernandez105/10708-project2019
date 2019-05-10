@@ -2,6 +2,7 @@ import time
 import argparse
 import sys
 import pprint
+import json
 from collections import Counter
 
 import numpy as np
@@ -214,7 +215,7 @@ def train_model(args, model, dataloader, valid_dataloader=None):
 
             optimizer.step()
 
-        if ep % 5 == 0 and valid_dataloader is not None:
+        if ep % args['valid_niter'] == 0 and valid_dataloader is not None:
             # validation
 
             all_preds = []
@@ -412,8 +413,10 @@ def parse_arguments():
     parser.add_argument('--seed', type=int)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--n_epochs', type=int, default=200)
+    parser.add_argument('--valid_niter', type=int, default=5)
 
     parser.add_argument('--print_rules', action='store_true')
+    parser.add_argument('--save_rules')
     parser.add_argument('--outfile')
 
     # model hyperparameters
@@ -462,6 +465,7 @@ def main():
     valid_data = data['valid_data']
     test_data = data['test_data']
     antes = data['antes']
+    order = data.get('order')
 
     if args['dataset'] == 'support2':
         args['n_features'] = train_data['c'].shape[-1]
@@ -564,6 +568,30 @@ def main():
             print(pyz[idx, test_classes[i]])
             if i >= 4:
                 break
+
+    if args['model'] in ['rcn', 'simple_rcn'] and args['save_rules'] is not None:
+        # Save predicted rules for each train and test
+        # all_pz = torch.cat(all_pz, dim=0)
+        predictions = {}
+
+        _, _, train_pz = pred_model(args, model, train_loader)
+        _, _, valid_pz = pred_model(args, model, valid_loader)
+        _, _, test_pz = pred_model(args, model, test_loader)
+
+        all_pz = torch.cat([train_pz, valid_pz, test_pz])
+
+        selected_antes = [antes[i] for i in all_pz.argmax(-1)]
+
+        for i, (a, idx) in enumerate(zip(selected_antes, all_pz.argmax(-1))):
+            # print(a, pyz[idx])
+            # print(pyz[idx, test_classes[i]])
+
+            predictions[int(order[i])] = {
+                'antecedent': a,
+                'p(y|z)': pyz[idx].cpu().numpy().tolist()
+            }
+
+        json.dump(predictions, open(args['save_rules'], 'w'))
 
     if args['dataset'] == 'support2':
         eval_support2(test_classes, all_preds)
