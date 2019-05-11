@@ -142,6 +142,9 @@ def load_support2_all(args):
     else:
         cat_data = make_antecedents(X, feat_names, orig_values, ignore_missing=(not args['use_missing']))
 
+    print(X[0])
+    print(feat_names)
+
     # load y
     y_file = args['label_file']
     y = np.loadtxt(y_file)
@@ -152,7 +155,8 @@ def load_support2_all(args):
         'x': cat_data,
         'c': X,
         'y': y,
-        'y2': Y
+        'y2': Y,
+        'feats': feat_names
     }
 
 def load_support2(args):
@@ -175,6 +179,8 @@ def load_support2(args):
         seed = args['seed']
         rng = np.random.RandomState(seed)
         order = rng.permutation(len(X))
+
+    print(order[:5])
 
     X = [X[i] for i in order]
     Y = Y[order]
@@ -205,6 +211,15 @@ def load_support2(args):
     S_train = build_satisfiability_matrix(X_train, antes)
     S_valid = build_satisfiability_matrix(X_valid, antes)
     S_test = build_satisfiability_matrix(X_test, antes)
+
+    np.savez('data_fixed.npz',
+            X_train=C_train,
+            X_valid=C_valid,
+            X_test=C_test,
+            Y_train=Y2_train,
+            Y_valid=Y2_valid,
+            Y_test=Y2_test)
+    json.dump(data['feats'], open('feat_order.json', 'w'))
 
     train_data = {
         'x': X_train,
