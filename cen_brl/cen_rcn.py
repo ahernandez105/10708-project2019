@@ -41,7 +41,7 @@ class IMDBEncoder(nn.Module):
 
         self.embedding = nn.Embedding(self.vocab_size, self.n_hidden)
         self.encoder = nn.LSTM(input_size=self.n_hidden, hidden_size=self.encoding_dim,
-                            batch_first=False)
+                            batch_first=False, bidirectional=True)
 
     def forward(self, x):
         embeddings = self.embedding(x)
@@ -90,6 +90,7 @@ def create_model(args, pyz):
         # encoder_args['vocab_size'] = 88587 + 3 # hardcode for now
         encoder_args['vocab_size'] = args['vocab_size']
         context_encoder = IMDBEncoder(encoder_args)
+        encoding_dim = encoding_dim * 2
     elif args['dataset'] == 'mnist':
         encoder_args['n_channels'] = 1
         context_encoder = ImageEncoder(encoder_args)
@@ -138,7 +139,11 @@ def compute_pyz(n_train, n_classes, n_antes, Y, S, alpha):
     # build count matrix
     # counts[y, i]: number of datapoints with label y that satisfy
     #   antecedent i
+    print(S.shape)
+    print(Y.shape)
+
     big_counts = np.zeros((n_train, n_classes, n_antes), dtype=np.uint8)
+    print(big_counts.shape)
     big_counts[np.arange(n_train), Y] = S
     counts = big_counts.sum(0).astype(np.float)
 
@@ -180,7 +185,10 @@ def train_model(args, model, dataloader, valid_dataloader=None):
             optimizer.zero_grad()
 
             if args['model'] == 'rcn':
-                pz, py = model(batch_c, batch_c, batch_s)
+                if args['dataset'] == 'mnist':
+                    pz, py = model(batch_c, batch_c.flatten(1, -1), batch_s)
+                else:
+                    pz, py = model(batch_c, batch_c, batch_s)
                 # compute p(y | x) = \sum_z p(y|z) p(z|x)
                 # p(z|x) is model output
                 # p(y|z) is precomputed
@@ -227,7 +235,10 @@ def train_model(args, model, dataloader, valid_dataloader=None):
                     batch_s = batch_sample['S'].to(device)
 
                     if args['model'] == 'rcn':
-                        pz, py = model(batch_c, batch_c, batch_s)
+                        if args['dataset'] == 'mnist':
+                            pz, py = model(batch_c, batch_c.flatten(1, -1), batch_s)
+                        else:
+                            pz, py = model(batch_c, batch_c, batch_s)
                         # py = torch.matmul(pz, pyz)
 
                     elif args['model'] == 'simple_rcn':
@@ -304,7 +315,10 @@ def pred_model(args, model, dataloader):
             batch_s = batch_sample['S'].to(device)
 
             if args['model'] == 'rcn':
-                pz, py = model(batch_c, batch_c, batch_s)
+                if args['dataset'] == 'mnist':
+                    pz, py = model(batch_c, batch_c.flatten(1, -1), batch_s)
+                else:
+                    pz, py = model(batch_c, batch_c, batch_s)
                 # py = torch.matmul(pz, pyz)
 
                 all_pz.append(pz)
@@ -473,6 +487,8 @@ def main():
         args['n_features'] = train_data['c'].shape[-1]
     elif args['dataset'] == 'imdb':
         args['vocab_size'] = data['vocab_size']
+    elif args['dataset'] == 'mnist':
+        args['n_features'] = 28 * 28
 
     for d in [train_data, valid_data, test_data]:
         for k, v in d.items():
@@ -593,6 +609,12 @@ def main():
 
         selected_antes = [antes[i] for i in all_pz.argmax(-1)]
 
+        print(preds.shape)
+        print(pyz.shape)
+
+        if args['dataset'] == 'mnist':
+            order = order.tolist() + list(range(60000, 70000))
+
         # for i, (a, idx) in enumerate(zip(selected_antes, all_pz.argmax(-1))):
         for i, (a, idx, y_t, y_p) in enumerate(zip(selected_antes,
                                                    all_pz.argmax(-1),
@@ -601,18 +623,20 @@ def main():
             # print(a, pyz[idx])
             # print(pyz[idx, test_classes[i]])
             
-            # determine accuracy at each timestep
-            acc = [
-                1 if (i >= y_t and i >= y_p or i < y_t and i < y_p) else 0
-                for i in range(n_classes)
-            ]
-
             predictions[int(order[i])] = {
             # predictions[i] = {
                 'antecedent': a,
                 'p(y|z)': pyz[idx].cpu().numpy().tolist(),
-                'acc': acc
+                # 'acc': acc
+                'y': int(y_p),
             }
+            if args['dataset'] == 'support2':
+                # determine accuracy at each timestep
+                acc = [
+                    1 if (i >= y_t and i >= y_p or i < y_t and i < y_p) else 0
+                    for i in range(n_classes)
+                ]
+                predictions[int(order[i])]['acc'] = acc
 
         json.dump(predictions, open(args['save_rules'], 'w'))
 
