@@ -99,7 +99,8 @@ def build_sat(z_train, z_test, antes, n=10000):
             sys.stdout.flush()
     print()
 
-    return S_train.transpose(), S_test.transpose(), antes
+    # return S_train.transpose(), S_test.transpose(), antes
+    return S_train.transpose(), S_test.transpose(), filtered_antes
 
 def filter_top(S_train, S_test, n=10000):
     """
@@ -135,7 +136,14 @@ if __name__ == '__main__':
     antes = get_freq_itemsets(train_features, y_train, min_support=min_support, max_lhs=max_lhs)
 
     st = time.time()
-    S_train, S_test, antes_sub = build_sat(z_train, z_test, antes)
+    if len(sys.argv) > 8:
+        n = int(sys.argv[8])
+    else:
+        n = 10000
+    S_train, S_test, antes_sub = build_sat(z_train, z_test, antes, n=n)
+
+    assert S_train.shape[-1] == len(antes_sub)
+    assert S_test.shape[-1] == len(antes_sub)
     print(time.time() - st)
 
     print(S_train.shape)
