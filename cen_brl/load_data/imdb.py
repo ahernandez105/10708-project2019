@@ -14,7 +14,13 @@ from utils import get_freq_itemsets, build_satisfiability_matrix
 from .preprocess import pad_sequences
 
 class IMDB(Dataset):
-    def __init__(self, x, c, y, S):
+    # def __init__(self, x, c, y, S):
+    def __init__(self, data):
+        x = data['x']
+        c = data['c']
+        y = data['y']
+        S = data['S']
+
         self.S = S.astype('f4')
         self.x = x
         self.y = y
@@ -108,11 +114,17 @@ def get_interpretable_features(sequences, vocab, binary=True, counts=True,
             feats.extend(binary_feats)
 
         if counts:
+            # count_feats = [
+            #     f"'{word_mapping[i]}' appears {v} times"
+            #     for i, v in c.items() if (i in word_mapping
+            # ]
             count_feats = [
-                f"'{word_mapping[i]}' appears {v} times"
-                for i, v in c.items() if i in word_mapping
+                f"'{word_mapping[i]}' appears >= 3 times"
+                for i, v in c.items() if (i in word_mapping and v >= 3)
             ]
             feats.extend(count_feats)
+
+        # TODO: non-binary
 
         features.append(feats)
 
@@ -212,5 +224,6 @@ def load_imdb(args):
         'valid_data': valid_data,
         'test_data': test_data,
         'antes': antes,
-        'vocab_size': vocab_size
+        'vocab_size': vocab_size,
+        'order': order
     }

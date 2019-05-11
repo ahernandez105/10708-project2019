@@ -41,6 +41,7 @@ class MNIST(Dataset):
         c = data['c']
 
         self.S = S.astype('f4')
+        print(self.S.shape)
         # self.x = x
         self.y = y
         self.context = np.transpose(c.astype('f4'), [0, 3, 1, 2])
@@ -303,6 +304,7 @@ def load_mnist(args):
         'valid_data': valid_data,
         'test_data': test_data,
         'antes': antes,
+        'order': order,
     }
 
 if __name__ == '__main__':

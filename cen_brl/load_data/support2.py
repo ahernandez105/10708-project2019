@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 
 from torch.utils.data import Dataset
@@ -27,7 +29,12 @@ class Support2(Dataset):
     """
     TODO: doesn't handle x (interpretable attributes) well currently
     """
-    def __init__(self, x, c, y, S):
+    # def __init__(self, x, c, y, S):
+    def __init__(self, data):
+        x = data['x']
+        c = data['c']
+        y = data['y']
+        S = data['S']
         self.S = S.astype('f4')
         self.x = x
         self.y = y
@@ -207,11 +214,6 @@ def load_support2(args):
     max_lhs = args['max_lhs']
     antes = get_freq_itemsets(X_train, Y_train, min_support=min_support, max_lhs=max_lhs)
 
-    # get satisfiability matrices
-    S_train = build_satisfiability_matrix(X_train, antes)
-    S_valid = build_satisfiability_matrix(X_valid, antes)
-    S_test = build_satisfiability_matrix(X_test, antes)
-
     np.savez('data_fixed.npz',
             X_train=C_train,
             X_valid=C_valid,
@@ -219,7 +221,12 @@ def load_support2(args):
             Y_train=Y2_train,
             Y_valid=Y2_valid,
             Y_test=Y2_test)
-    json.dump(data['feats'], open('feat_order.json', 'w'))
+    json.dump(list(data['feats']), open('feat_order.json', 'w'))
+
+    # get satisfiability matrices
+    S_train = build_satisfiability_matrix(X_train, antes)
+    S_valid = build_satisfiability_matrix(X_valid, antes)
+    S_test = build_satisfiability_matrix(X_test, antes)
 
     train_data = {
         'x': X_train,
