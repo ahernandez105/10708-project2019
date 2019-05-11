@@ -405,6 +405,7 @@ def parse_arguments():
                         choices=['pixels16x16', 'pixels7x7'],
                         default='pixels7x7'
                         )
+    parser.add_argument('--ante_file')
 
     parser.add_argument('--cuda', action='store_true')
 
@@ -530,13 +531,16 @@ def main():
     else:
         raise NotImplementedError
 
-    train_dataset = dataset_class(train_data['x'], train_data['c'], train_data['y'], train_data['S'])
+    # train_dataset = dataset_class(train_data['x'], train_data['c'], train_data['y'], train_data['S'])
+    train_dataset = dataset_class(train_data)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 
-    valid_dataset = dataset_class(valid_data['x'], valid_data['c'], valid_data['y'], valid_data['S'])
+    # valid_dataset = dataset_class(valid_data['x'], valid_data['c'], valid_data['y'], valid_data['S'])
+    valid_dataset = dataset_class(valid_data)
     valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
-    test_dataset = dataset_class(test_data['x'], test_data['c'], test_data['y'], test_data['S'])
+    # test_dataset = dataset_class(test_data['x'], test_data['c'], test_data['y'], test_data['S'])
+    test_dataset = dataset_class(test_data)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     model = train_model(args,

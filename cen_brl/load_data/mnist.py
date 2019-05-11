@@ -4,6 +4,7 @@ Load and preprocess MNIST data.
 Based on CEN implementation
 """
 
+import json
 import sys
 import time
 
@@ -34,9 +35,13 @@ def zca_whiten(X, W):
     return np.reshape(white_X, shape)
 
 class MNIST(Dataset):
-    def __init__(self, x, c, y, S):
+    def __init__(self, data):
+        y = data['y']
+        S = data['S']
+        c = data['c']
+
         self.S = S.astype('f4')
-        self.x = x
+        # self.x = x
         self.y = y
         self.context = np.transpose(c.astype('f4'), [0, 3, 1, 2])
 
@@ -51,8 +56,8 @@ class MNIST(Dataset):
         return {
             'S': self.S[idx],
             'context': self.context[idx],
-            'x': self.x[idx],
-            'y': self.y[idx]
+            # 'x': self.x[idx],
+            'y': self.y[idx],
         }
 
 def get_interpretable_features(args):
@@ -214,9 +219,6 @@ def load_mnist_init(args):
 def load_mnist(args):
     (x_train, y_train), (x_test, y_test) = load_mnist_init(args)
 
-    # load interpretable features
-    (train_features, test_features), _ = get_interpretable_features(args)
-
     # split into train and validation
     N_TRAIN = 50000
     N_VALID = 10000
@@ -225,49 +227,76 @@ def load_mnist(args):
     rng = np.random.RandomState(seed)
     order = rng.permutation(len(x_train))
 
-    X = [train_features[i] for i in order]
     Y = y_train[order]
     C = x_train[order]
 
-    x_train = X[:N_TRAIN]
+    Y = y_train[order]
+    C = x_train[order]
+
     y_train = Y[:N_TRAIN]
     c_train = C[:N_TRAIN]
 
-    x_valid = X[N_TRAIN:]
     y_valid = Y[N_TRAIN:]
     c_valid = C[N_TRAIN:]
 
     c_test = x_test
-    x_test = test_features
-
-    # get antecedents from train data
-    min_support = args['min_support']
-    max_lhs = args['max_lhs']
-    antes = get_freq_itemsets(x_train, y_train, min_support=min_support, max_lhs=max_lhs)
-
-    # build satisfiability matrix
-    S_train = build_satisfiability_matrix(x_train, antes)
-    S_valid = build_satisfiability_matrix(x_valid, antes)
-    S_test = build_satisfiability_matrix(x_test, antes)
 
     train_data = {
-        'x': x_train,
         'y': y_train,
         'c': c_train,
-        'S': S_train,
+        # 'S': S_train,
     }
     valid_data = {
-        'x': x_valid,
         'y': y_valid,
         'c': c_valid,
-        'S': S_valid,
+        # 'S': S_valid,
     }
     test_data = {
-        'x': x_test,
         'y': y_test,
         'c': c_test,
-        'S': S_test,
+        # 'S': S_test,
     }
+
+
+    # load interpretable features
+    if args['categorical_file']:
+        x = np.load(args['categorical_file'])
+        S = x['S_train'][order]
+
+        S_train = S[:N_TRAIN]
+        S_valid = S[N_TRAIN:]
+        S_test = x['S_test']
+
+        # load antecedents
+        antes = json.load(open(args['ante_file'], 'r'))
+        antes = [antes[str(i)] for i in range(len(antes))]
+
+    else:
+        (train_features, test_features), _ = get_interpretable_features(args)
+
+        X = [train_features[i] for i in order]
+
+        x_train = X[:N_TRAIN]
+        x_valid = X[N_TRAIN:]
+        x_test = test_features
+
+        # get antecedents from train data
+        min_support = args['min_support']
+        max_lhs = args['max_lhs']
+        antes = get_freq_itemsets(x_train, y_train, min_support=min_support, max_lhs=max_lhs)
+
+        # build satisfiability matrix
+        S_train = build_satisfiability_matrix(x_train, antes)
+        S_valid = build_satisfiability_matrix(x_valid, antes)
+        S_test = build_satisfiability_matrix(x_test, antes)
+
+        train_data['x'] = x_train
+        valid_data['x'] = x_valid
+        test_data['x'] = x_test
+
+    train_data['S'] = S_train
+    valid_data['S'] = S_valid
+    test_data['S'] = S_test
 
     return {
         'train_data': train_data,
